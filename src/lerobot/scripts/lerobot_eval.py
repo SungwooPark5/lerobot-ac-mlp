@@ -144,6 +144,8 @@ def rollout(
     all_rewards = []
     all_successes = []
     all_dones = []
+    
+    latencies = []
 
     step = 0
     # Keep track of which environments are done.
@@ -155,10 +157,19 @@ def rollout(
         disable=inside_slurm(),  # we dont want progress bar when we use slurm, since it clutters the logs
         leave=False,
     )
+    try:
+        device = next(policy.parameters()).device
+    except StopIteration:
+        device = torch.device("cpu")
+    
     check_env_attributes_and_types(env)
     while not np.all(done) and step < max_steps:
         # Numpy array to tensor and changing dictionary keys to LeRobot policy format.
         observation = preprocess_observation(observation)
+        
+        # start time for latency measurement
+        start_time = time.perf_counter()
+        
         if return_observations:
             all_observations.append(deepcopy(observation))
 
@@ -168,6 +179,14 @@ def rollout(
         observation = preprocessor(observation)
         with torch.inference_mode():
             action = policy.select_action(observation)
+            
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+
+        # end time for latency measurement
+        end_time = time.perf_counter()
+        latencies.append(end_time - start_time)
+            
         action = postprocessor(action)
 
         # Convert to CPU / numpy.
@@ -223,6 +242,8 @@ def rollout(
         "reward": torch.stack(all_rewards, dim=1),
         "success": torch.stack(all_successes, dim=1),
         "done": torch.stack(all_dones, dim=1),
+        "mean_latency": np.mean(latencies) if latencies else float("nan"),
+        "max_latency": np.max(latencies) if latencies else float("nan"),
     }
     if return_observations:
         stacked_observations = {}
@@ -281,6 +302,7 @@ def eval_policy(
     max_rewards = []
     all_successes = []
     all_seeds = []
+    all_mean_latencies = []
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
 
@@ -325,6 +347,9 @@ def eval_policy(
             return_observations=return_episode_data,
             render_callback=render_frame if max_episodes_rendered > 0 else None,
         )
+        
+        if "mean_latency" in rollout_data:
+            all_mean_latencies.append(rollout_data["mean_latency"])
 
         # Figure out where in each rollout sequence the first done condition was encountered (results after
         # this won't be included).
@@ -423,7 +448,9 @@ def eval_policy(
             "pc_success": float(np.nanmean(all_successes[:n_episodes]) * 100),
             "eval_s": time.time() - start,
             "eval_ep_s": (time.time() - start) / n_episodes,
+            "avg_inference_latency_ms": float(np.mean(all_mean_latencies)) * 1000 if all_mean_latencies else float("nan"), # unit: milliseconds
         },
+        "mean_latencies": all_mean_latencies,
     }
 
     if return_episode_data:
@@ -552,9 +579,10 @@ class TaskMetrics(TypedDict):
     max_rewards: list[float]
     successes: list[bool]
     video_paths: list[str]
+    mean_latencies: list[float]
 
 
-ACC_KEYS = ("sum_rewards", "max_rewards", "successes", "video_paths")
+ACC_KEYS = ("sum_rewards", "max_rewards", "successes", "video_paths", "mean_latencies")
 
 
 def eval_one(
@@ -591,6 +619,7 @@ def eval_one(
         max_rewards=[ep["max_reward"] for ep in per_episode],
         successes=[ep["success"] for ep in per_episode],
         video_paths=task_result.get("video_paths", []),
+        mean_latencies=task_result.get("mean_latencies", []),
     )
 
 
@@ -738,6 +767,7 @@ def eval_policy_all(
             "pc_success": _agg_from_list(acc["successes"]) * 100 if acc["successes"] else float("nan"),
             "n_episodes": len(acc["sum_rewards"]),
             "video_paths": list(acc["video_paths"]),
+            "avg_latency_ms": _agg_from_list(acc["mean_latencies"]) * 1000 if acc["mean_latencies"] else float("nan") # unit: milliseconds
         }
 
     # overall aggregates
@@ -749,6 +779,7 @@ def eval_policy_all(
         "eval_s": time.time() - start_t,
         "eval_ep_s": (time.time() - start_t) / max(1, len(overall["sum_rewards"])),
         "video_paths": list(overall["video_paths"]),
+        "avg_latency_ms": _agg_from_list(overall["mean_latencies"]) * 1000 if overall["mean_latencies"] else float("nan") # unit: milliseconds
     }
 
     return {
