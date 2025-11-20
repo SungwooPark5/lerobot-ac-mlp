@@ -167,8 +167,6 @@ def rollout(
         # Numpy array to tensor and changing dictionary keys to LeRobot policy format.
         observation = preprocess_observation(observation)
         
-        # start time for latency measurement
-        start_time = time.perf_counter()
         
         if return_observations:
             all_observations.append(deepcopy(observation))
@@ -177,6 +175,10 @@ def rollout(
         # TODO: works with SyncVectorEnv but not AsyncVectorEnv
         observation = add_envs_task(env, observation)
         observation = preprocessor(observation)
+
+        # start time for latency measurement
+        start_time = time.perf_counter()
+
         with torch.inference_mode():
             action = policy.select_action(observation)
             
