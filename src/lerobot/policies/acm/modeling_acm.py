@@ -33,18 +33,25 @@ from torch import Tensor, nn
 from torchvision.models._utils import IntermediateLayerGetter
 from torchvision.ops.misc import FrozenBatchNorm2d
 
-from lerobot.policies.act.configuration_act import ACTConfig
+try:
+    from mamba_ssm import Mamba
+    HAS_MAMBA = True
+except ImportError:
+    HAS_MAMBA = False
+
+
+from lerobot.policies.acm.configuration_acm import ACMConfig
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
 
 class ACMPolicy(PreTrainedPolicy):
-    config_class = ACTConfig
+    config_class = ACMConfig
     name = "acm"
 
     def __init__(
         self,
-        config: ACTConfig,
+        config: ACMConfig,
     ):
         """
         Args:
@@ -282,7 +289,7 @@ class ACM(nn.Module):
                                 └───────────────────────┘
     """
 
-    def __init__(self, config: ACTConfig):
+    def __init__(self, config: ACMConfig):
         # BERT style VAE encoder with input tokens [cls, robot_state, *action_sequence].
         # The cls token forms parameters of the latent's distribution (like this [*means, *log_variances]).
         super().__init__()
@@ -327,8 +334,11 @@ class ACM(nn.Module):
 
         # Transformer (acts as VAE decoder when training with the variational objective).
         self.encoder = ACTEncoder(config)
-        # self.decoder = ACTDecoder(config)
-        self.decoder = MambaACMDecoder(config)
+        
+        if config.use_mamba:
+            self.decoder = MambaACMDecoder(config)
+        else:
+            self.decoder = ACTDecoder(config)
 
         # Transformer encoder input projections. The tokens will be structured like
         # [latent, (robot_state), (env_state), (image_feature_map_pixels)].
@@ -508,7 +518,7 @@ class ACM(nn.Module):
 class ACTEncoder(nn.Module):
     """Convenience module for running multiple encoder layers, maybe followed by normalization."""
 
-    def __init__(self, config: ACTConfig, is_vae_encoder: bool = False):
+    def __init__(self, config: ACMConfig, is_vae_encoder: bool = False):
         super().__init__()
         self.is_vae_encoder = is_vae_encoder
         num_layers = config.n_vae_encoder_layers if self.is_vae_encoder else config.n_encoder_layers
@@ -525,7 +535,7 @@ class ACTEncoder(nn.Module):
 
 
 class ACTEncoderLayer(nn.Module):
-    def __init__(self, config: ACTConfig):
+    def __init__(self, config: ACMConfig):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
 
@@ -563,14 +573,20 @@ class ACTEncoderLayer(nn.Module):
         return x
 
 class MambaACMDecoder(nn.Module):
-    def __init__(self, config: ACTConfig):
+    def __init__(self, config: ACMConfig):
         super().__init__()
+        
+        if not HAS_MAMBA:
+            raise ImportError(
+                "Mamba-ssm is not installed. Please install it to use 'use_mamba=true'"
+            )
+        
         self.layers = nn.ModuleList([
             Mamba(
                 d_model=config.dim_model, # Model dimension
-                d_state=16,               # SSM state expansion factor (보통 16)
-                d_conv=4,                 # Local convolution width
-                expand=2,                 # Block expansion factor
+                d_state=config.mamba_d_state, # SSM state expansion factor
+                d_conv=config.mamba_d_conv, # Local convolution width
+                expand=config.mamba_expand, # Block expansion factor
             ) for _ in range(config.n_decoder_layers)
         ])
         self.norm = nn.LayerNorm(config.dim_model)
@@ -604,7 +620,7 @@ class MambaACMDecoder(nn.Module):
         return out.transpose(0, 1)
 
 class ACTDecoder(nn.Module):
-    def __init__(self, config: ACTConfig):
+    def __init__(self, config: ACMConfig):
         """Convenience module for running multiple decoder layers followed by normalization."""
         super().__init__()
         self.layers = nn.ModuleList([ACTDecoderLayer(config) for _ in range(config.n_decoder_layers)])
@@ -627,7 +643,7 @@ class ACTDecoder(nn.Module):
 
 
 class ACTDecoderLayer(nn.Module):
-    def __init__(self, config: ACTConfig):
+    def __init__(self, config: ACMConfig):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
         self.multihead_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)

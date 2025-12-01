@@ -22,7 +22,7 @@ from lerobot.optim.optimizers import AdamWConfig
 
 @PreTrainedConfig.register_subclass("act")
 @dataclass
-class ACTConfig(PreTrainedConfig):
+class ACMConfig(PreTrainedConfig):
     """Configuration class for the Action Chunking Transformers policy.
 
     Defaults are configured for training on bimanual Aloha tasks like "insertion" or "transfer".
@@ -119,6 +119,14 @@ class ACTConfig(PreTrainedConfig):
     # that means only the first layer is used. Here we match the original implementation by setting this to 1.
     # See this issue https://github.com/tonyzhaozh/act/issues/25#issue-2258740521.
     n_decoder_layers: int = 1
+    
+    # Configuration for the Mamba ACM Decoder
+    use_mamba: bool = True
+    mamba_d_state: int = 16
+    mamba_d_conv: int = 4
+    mamba_expand: int = 2
+    
+    
     # VAE.
     use_vae: bool = True
     latent_dim: int = 32
