@@ -38,14 +38,9 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
 
-class ACTPolicy(PreTrainedPolicy):
-    """
-    Action Chunking Transformer Policy as per Learning Fine-Grained Bimanual Manipulation with Low-Cost
-    Hardware (paper: https://huggingface.co/papers/2304.13705, code: https://github.com/tonyzhaozh/act)
-    """
-
+class ACMPolicy(PreTrainedPolicy):
     config_class = ACTConfig
-    name = "act"
+    name = "acm"
 
     def __init__(
         self,
@@ -252,8 +247,8 @@ class ACTTemporalEnsembler:
         return action
 
 
-class ACT(nn.Module):
-    """Action Chunking Transformer: The underlying neural network for ACTPolicy.
+class ACM(nn.Module):
+    """Action Chunking Transformer: The underlying neural network for ACMPolicy.
 
     Note: In this code we use the terms `vae_encoder`, 'encoder', `decoder`. The meanings are as follows.
         - The `vae_encoder` is, as per the literature around variational auto-encoders (VAE), the part of the
@@ -332,7 +327,8 @@ class ACT(nn.Module):
 
         # Transformer (acts as VAE decoder when training with the variational objective).
         self.encoder = ACTEncoder(config)
-        self.decoder = ACTDecoder(config)
+        # self.decoder = ACTDecoder(config)
+        self.decoder = MambaACMDecoder(config)
 
         # Transformer encoder input projections. The tokens will be structured like
         # [latent, (robot_state), (env_state), (image_feature_map_pixels)].
@@ -566,6 +562,46 @@ class ACTEncoderLayer(nn.Module):
             x = self.norm2(x)
         return x
 
+class MambaACMDecoder(nn.Module):
+    def __init__(self, config: ACTConfig):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            Mamba(
+                d_model=config.dim_model, # Model dimension
+                d_state=16,               # SSM state expansion factor (보통 16)
+                d_conv=4,                 # Local convolution width
+                expand=2,                 # Block expansion factor
+            ) for _ in range(config.n_decoder_layers)
+        ])
+        self.norm = nn.LayerNorm(config.dim_model)
+
+    def forward(
+        self,
+        x: Tensor,                 # Action Queries (Chunk Size, Batch, Dim)
+        encoder_out: Tensor,       # Context (Encoder Seq, Batch, Dim)
+        decoder_pos_embed: Tensor | None = None,
+        encoder_pos_embed: Tensor | None = None,
+    ) -> Tensor:
+        if decoder_pos_embed is not None:
+            x = x + decoder_pos_embed
+        if encoder_pos_embed is not None:
+            encoder_out = encoder_out + encoder_pos_embed
+
+        x = x.transpose(0, 1)
+        encoder_out = encoder_out.transpose(0, 1)
+
+        combined_seq = torch.cat([encoder_out, x], dim=1)
+
+        for layer in self.layers:
+            combined_seq = layer(combined_seq)
+        
+        chunk_size = x.shape[1]
+        out = combined_seq[:, -chunk_size:, :]
+        
+        if self.norm is not None:
+            out = self.norm(out)
+
+        return out.transpose(0, 1)
 
 class ACTDecoder(nn.Module):
     def __init__(self, config: ACTConfig):
