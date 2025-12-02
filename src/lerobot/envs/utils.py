@@ -108,15 +108,39 @@ def env_to_policy_features(env_cfg: EnvConfig) -> dict[str, PolicyFeature]:
 
 
 def are_all_envs_same_type(env: gym.vector.VectorEnv) -> bool:
-    first_type = type(env.envs[0])  # Get type of first env
-    return all(type(e) is first_type for e in env.envs)  # Fast type check
+
+    if isinstance(env, gym.vector.AsyncVectorEnv):
+        return True
+
+    # 2. SyncVectorEnv일 경우:
+    # env.envs에 직접 접근하여 타입을 비교합니다. 
+    # get_attr("__class__")를 쓰면 생성자가 호출되어버리는 문제를 피할 수 있습니다.
+    elif isinstance(env, gym.vector.SyncVectorEnv):
+        first_type = type(env.envs[0])
+        return all(type(e) is first_type for e in env.envs)
 
 
 def check_env_attributes_and_types(env: gym.vector.VectorEnv) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("once", UserWarning)  # Apply filter only in this function
+        
+        has_task_description = False
+        has_task = False
+        
+        try:
+            env.get_attr("task_description")
+            has_task_description = True
+        except AttributeError:
+            pass
+        
+        try:
+            env.get_attr("task")
+            has_task = True
+        except AttributeError:
+            pass
+        
 
-        if not (hasattr(env.envs[0], "task_description") and hasattr(env.envs[0], "task")):
+        if not has_task_description and not has_task:
             warnings.warn(
                 "The environment does not have 'task_description' and 'task'. Some policies require these features.",
                 UserWarning,
@@ -132,7 +156,25 @@ def check_env_attributes_and_types(env: gym.vector.VectorEnv) -> None:
 
 def add_envs_task(env: gym.vector.VectorEnv, observation: dict[str, Any]) -> dict[str, Any]:
     """Adds task feature to the observation dict with respect to the first environment attribute."""
-    if hasattr(env.envs[0], "task_description"):
+    if isinstance(env, gym.vector.AsyncVectorEnv):
+        return
+
+    has_task_description = False
+    has_task = False
+    
+    try:
+        env.get_attr("task_description")
+        has_task_description = True
+    except AttributeError:
+        pass
+    
+    try:
+        env.get_attr("task")
+        has_task = True
+    except AttributeError:
+        pass
+    
+    if has_task_description:
         task_result = env.call("task_description")
 
         if isinstance(task_result, tuple):
@@ -144,7 +186,7 @@ def add_envs_task(env: gym.vector.VectorEnv, observation: dict[str, Any]) -> dic
             raise TypeError("All items in task_description result must be strings")
 
         observation["task"] = task_result
-    elif hasattr(env.envs[0], "task"):
+    elif has_task:
         task_result = env.call("task")
 
         if isinstance(task_result, tuple):

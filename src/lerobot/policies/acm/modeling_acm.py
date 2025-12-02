@@ -62,7 +62,7 @@ class ACMPolicy(PreTrainedPolicy):
         config.validate_features()
         self.config = config
 
-        self.model = ACT(config)
+        self.model = ACM(config)
 
         if config.temporal_ensemble_coeff is not None:
             self.temporal_ensembler = ACTTemporalEnsembler(config.temporal_ensemble_coeff, config.chunk_size)

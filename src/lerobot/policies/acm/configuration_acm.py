@@ -20,7 +20,7 @@ from lerobot.configs.types import NormalizationMode
 from lerobot.optim.optimizers import AdamWConfig
 
 
-@PreTrainedConfig.register_subclass("act")
+@PreTrainedConfig.register_subclass("acm")
 @dataclass
 class ACMConfig(PreTrainedConfig):
     """Configuration class for the Action Chunking Transformers policy.

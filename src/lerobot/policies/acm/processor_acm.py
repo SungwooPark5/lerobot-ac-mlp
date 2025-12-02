@@ -17,7 +17,7 @@ from typing import Any
 
 import torch
 
-from lerobot.policies.act.configuration_act import ACTConfig
+from lerobot.policies.acm.configuration_acm import ACMConfig
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     DeviceProcessorStep,
@@ -31,8 +31,8 @@ from lerobot.processor.converters import policy_action_to_transition, transition
 from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
 
 
-def make_act_pre_post_processors(
-    config: ACTConfig,
+def make_acm_pre_post_processors(
+    config: ACMConfig,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
 ) -> tuple[
     PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],

@@ -79,10 +79,12 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
     elif name == "act":
         from lerobot.policies.act.modeling_act import ACTPolicy
         
+        return ACTPolicy
+        
     elif name == "acm":
         from lerobot.policies.acm.modeling_acm import ACMPolicy
     
-        return ACTPolicy
+        return ACMPolicy
 
     elif name == "vqbet":
         from lerobot.policies.vqbet.modeling_vqbet import VQBeTPolicy
@@ -277,6 +279,14 @@ def make_pre_post_processors(
         from lerobot.policies.act.processor_act import make_act_pre_post_processors
 
         processors = make_act_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACMConfig):
+        from lerobot.policies.acm.processor_acm import make_acm_pre_post_processors
+
+        processors = make_acm_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )
