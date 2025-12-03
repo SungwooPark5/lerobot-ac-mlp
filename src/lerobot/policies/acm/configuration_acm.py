@@ -119,14 +119,17 @@ class ACMConfig(PreTrainedConfig):
     # that means only the first layer is used. Here we match the original implementation by setting this to 1.
     # See this issue https://github.com/tonyzhaozh/act/issues/25#issue-2258740521.
     n_decoder_layers: int = 1
-    
+
     # Configuration for the Mamba ACM Decoder
     use_mamba: bool = True
     mamba_d_state: int = 16
     mamba_d_conv: int = 4
     mamba_expand: int = 2
-    
-    
+
+    # Configuration for temporal weighting
+    use_temporal_weighting: bool = False
+    temporal_execution_weight: float = 0.9
+
     # VAE.
     use_vae: bool = True
     latent_dim: int = 32

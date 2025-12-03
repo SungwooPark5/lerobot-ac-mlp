@@ -35,6 +35,7 @@ from torchvision.ops.misc import FrozenBatchNorm2d
 
 try:
     from mamba_ssm import Mamba
+
     HAS_MAMBA = True
 except ImportError:
     HAS_MAMBA = False
@@ -142,8 +143,30 @@ class ACMPolicy(PreTrainedPolicy):
 
         actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
 
+        chunk_size = actions_hat.shape[1]
+        n_steps = self.config.n_action_steps
+        device = actions_hat.device
+
+        weights = torch.ones(chunk_size, device=device)
+
+        use_weighting = getattr(self.config, "use_temporal_weighting", False)
+        exec_weight_mass = getattr(self.config, "temporal_execution_weight", 0.9)
+
+        if use_weighting and n_steps < chunk_size:
+            future_weight_mass = 1.0 - exec_weight_mass
+
+            w_exec = (chunk_size * exec_weight_mass) / n_steps
+            w_future = (chunk_size * future_weight_mass) / (chunk_size - n_steps)
+
+            weights[:n_steps] = w_exec
+            weights[n_steps:] = w_future
+
+        weights = weights.view(1, -1, 1)
+
         l1_loss = (
-            F.l1_loss(batch[ACTION], actions_hat, reduction="none") * ~batch["action_is_pad"].unsqueeze(-1)
+            F.l1_loss(batch[ACTION], actions_hat, reduction="none")
+            * ~batch["action_is_pad"].unsqueeze(-1)
+            * weights
         ).mean()
 
         loss_dict = {"l1_loss": l1_loss.item()}
@@ -334,7 +357,7 @@ class ACM(nn.Module):
 
         # Transformer (acts as VAE decoder when training with the variational objective).
         self.encoder = ACTEncoder(config)
-        
+
         if config.use_mamba:
             self.decoder = MambaACMDecoder(config)
         else:
@@ -572,29 +595,31 @@ class ACTEncoderLayer(nn.Module):
             x = self.norm2(x)
         return x
 
+
 class MambaACMDecoder(nn.Module):
     def __init__(self, config: ACMConfig):
         super().__init__()
-        
+
         if not HAS_MAMBA:
-            raise ImportError(
-                "Mamba-ssm is not installed. Please install it to use 'use_mamba=true'"
-            )
-        
-        self.layers = nn.ModuleList([
-            Mamba(
-                d_model=config.dim_model, # Model dimension
-                d_state=config.mamba_d_state, # SSM state expansion factor
-                d_conv=config.mamba_d_conv, # Local convolution width
-                expand=config.mamba_expand, # Block expansion factor
-            ) for _ in range(config.n_decoder_layers)
-        ])
+            raise ImportError("Mamba-ssm is not installed. Please install it to use 'use_mamba=true'")
+
+        self.layers = nn.ModuleList(
+            [
+                Mamba(
+                    d_model=config.dim_model,  # Model dimension
+                    d_state=config.mamba_d_state,  # SSM state expansion factor
+                    d_conv=config.mamba_d_conv,  # Local convolution width
+                    expand=config.mamba_expand,  # Block expansion factor
+                )
+                for _ in range(config.n_decoder_layers)
+            ]
+        )
         self.norm = nn.LayerNorm(config.dim_model)
 
     def forward(
         self,
-        x: Tensor,                 # Action Queries (Chunk Size, Batch, Dim)
-        encoder_out: Tensor,       # Context (Encoder Seq, Batch, Dim)
+        x: Tensor,  # Action Queries (Chunk Size, Batch, Dim)
+        encoder_out: Tensor,  # Context (Encoder Seq, Batch, Dim)
         decoder_pos_embed: Tensor | None = None,
         encoder_pos_embed: Tensor | None = None,
     ) -> Tensor:
@@ -610,14 +635,15 @@ class MambaACMDecoder(nn.Module):
 
         for layer in self.layers:
             combined_seq = layer(combined_seq)
-        
+
         chunk_size = x.shape[1]
         out = combined_seq[:, -chunk_size:, :]
-        
+
         if self.norm is not None:
             out = self.norm(out)
 
         return out.transpose(0, 1)
+
 
 class ACTDecoder(nn.Module):
     def __init__(self, config: ACMConfig):
