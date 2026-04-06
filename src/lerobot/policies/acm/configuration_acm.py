@@ -156,16 +156,25 @@ class ACMConfig(PreTrainedConfig):
             raise ValueError(
                 f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
             )
-        if self.temporal_ensemble_coeff is not None and self.n_action_steps > 1:
-            raise NotImplementedError(
-                "`n_action_steps` must be 1 when using temporal ensembling. This is "
-                "because the policy needs to be queried every step to compute the ensembled action."
-            )
+        ## ACMChunkEnsembler용 수정
         if self.n_action_steps > self.chunk_size:
             raise ValueError(
                 f"The chunk size is the upper bound for the number of action steps per model invocation. Got "
                 f"{self.n_action_steps} for `n_action_steps` and {self.chunk_size} for `chunk_size`."
             )
+
+
+        ## ACMChunkEnsembler용 수정
+        # - ACT-style: must query every step, so n_action_steps must be 1.
+        # - ACM/Mamba-style: chunk-overlap ensemble is allowed for n_action_steps > 1. 
+        if self.temporal_ensemble_coeff is not None:
+            if not self.use_mamba and self.n_action_steps != 1:
+                raise NotImplementedError(
+                    "`n_action_steps` must be 1 when using temporal ensembling with ACT-style decoding "
+                    "(use_mamba=False). For ACM/Mamba-style chunk-overlap temporal ensembling "
+                    "(use_mamba=True), `n_action_steps > 1` is allowed."
+                )
+
         if self.n_obs_steps != 1:
             raise ValueError(
                 f"Multiple observation steps not handled yet. Got `nobs_steps={self.n_obs_steps}`"
