@@ -177,3 +177,9 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+# eval videos
+outputs/eval/**/videos/
+*.mp4
+*.avi
+*.mov

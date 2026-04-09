@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 import logging
 import time
 from contextlib import nullcontext
@@ -355,6 +356,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
         if is_log_step:
             logging.info(train_tracker)
+            # Save training metrics to JSONL (local, no WandB needed)
+            train_log_dict = {"step": step, **train_tracker.to_dict()}
+            if output_dict:
+                train_log_dict.update(output_dict)
+            train_log_path = cfg.output_dir / "training_log.jsonl"
+            train_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(train_log_path, "a") as f:
+                f.write(json.dumps(train_log_dict, default=str) + "\n")
             if wandb_logger:
                 wandb_log_dict = train_tracker.to_dict()
                 if output_dict:
@@ -396,7 +405,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                         postprocessor=postprocessor,
                         n_episodes=cfg.eval.n_episodes,
                         videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
-                        max_episodes_rendered=4,
+                        max_episodes_rendered=0,
                         start_seed=cfg.seed,
                         max_parallel_tasks=cfg.env.max_parallel_tasks,
                     )
@@ -406,6 +415,24 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 # optional: per-suite logging
                 for suite, suite_info in eval_info.items():
                     logging.info("Suite %s aggregated: %s", suite, suite_info)
+
+                # Save eval metrics to JSON (local, no WandB needed)
+                eval_save_dir = cfg.output_dir / "eval"
+                eval_save_dir.mkdir(parents=True, exist_ok=True)
+                eval_save_data = {"step": step}
+                for suite, suite_info in eval_info.items():
+                    if isinstance(suite_info, dict):
+                        safe = {}
+                        for k, v in suite_info.items():
+                            if k == "video_paths":
+                                safe[k] = [str(p) for p in v] if v else []
+                            else:
+                                safe[k] = v
+                        eval_save_data[suite] = safe
+                    else:
+                        eval_save_data[suite] = str(suite_info)
+                with open(eval_save_dir / f"eval_step_{step_id}.json", "w") as f:
+                    json.dump(eval_save_data, f, indent=2, default=str)
 
                 # meters/tracker
                 eval_metrics = {
