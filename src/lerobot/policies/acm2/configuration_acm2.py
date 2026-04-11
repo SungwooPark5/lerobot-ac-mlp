@@ -20,9 +20,9 @@ from lerobot.configs.types import NormalizationMode
 from lerobot.optim.optimizers import AdamWConfig
 
 
-@PreTrainedConfig.register_subclass("act")
+@PreTrainedConfig.register_subclass("acm2")
 @dataclass
-class ACTConfig(PreTrainedConfig):
+class ACM2Config(PreTrainedConfig):
     """Configuration class for the Action Chunking Transformers policy.
 
     Defaults are configured for training on bimanual Aloha tasks like "insertion" or "transfer".
@@ -119,6 +119,22 @@ class ACTConfig(PreTrainedConfig):
     # that means only the first layer is used. Here we match the original implementation by setting this to 1.
     # See this issue https://github.com/tonyzhaozh/act/issues/25#issue-2258740521.
     n_decoder_layers: int = 1
+
+    # Configuration for the Mamba-2 ACM Decoder
+    # Mamba-2 (Dao & Gu, 2024, "Transformers are SSMs", arxiv 2405.21060)
+    # Mamba-2 supports much larger d_state efficiently via SSD (State Space Duality).
+    # headdim must divide d_inner = dim_model * mamba2_expand.
+    use_mamba: bool = True
+    mamba2_d_state: int = 64        # Mamba-1 default 16; Mamba-2 default 128. 64 = 중간값
+    mamba2_d_conv: int = 4
+    mamba2_expand: int = 2
+    mamba2_headdim: int = 64        # 1024 / 64 = 16 heads (for dim_model=512, expand=2)
+    mamba2_ngroups: int = 1
+
+    # Configuration for temporal weighting
+    use_temporal_weighting: bool = False
+    temporal_execution_weight: float = 0.9
+
     # VAE.
     use_vae: bool = True
     latent_dim: int = 32
@@ -127,11 +143,6 @@ class ACTConfig(PreTrainedConfig):
     # Inference.
     # Note: the value used in ACT when temporal ensembling is enabled is 0.01.
     temporal_ensemble_coeff: float | None = None
-
-    # Configuration for temporal weighting (training-time loss weighting).
-    # Mirrors ACM's implementation so the two decoders can be compared on equal footing.
-    use_temporal_weighting: bool = False
-    temporal_execution_weight: float = 0.9
 
     # Training and loss computation.
     dropout: float = 0.1

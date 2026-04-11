@@ -33,23 +33,26 @@ from torch import Tensor, nn
 from torchvision.models._utils import IntermediateLayerGetter
 from torchvision.ops.misc import FrozenBatchNorm2d
 
-from lerobot.policies.act.configuration_act import ACTConfig
+try:
+    from mamba_ssm import Mamba2
+
+    HAS_MAMBA2 = True
+except ImportError:
+    HAS_MAMBA2 = False
+
+
+from lerobot.policies.acm2.configuration_acm2 import ACM2Config
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
 
-class ACTPolicy(PreTrainedPolicy):
-    """
-    Action Chunking Transformer Policy as per Learning Fine-Grained Bimanual Manipulation with Low-Cost
-    Hardware (paper: https://huggingface.co/papers/2304.13705, code: https://github.com/tonyzhaozh/act)
-    """
-
-    config_class = ACTConfig
-    name = "act"
+class ACM2Policy(PreTrainedPolicy):
+    config_class = ACM2Config
+    name = "acm2"
 
     def __init__(
         self,
-        config: ACTConfig,
+        config: ACM2Config,
     ):
         """
         Args:
@@ -60,7 +63,7 @@ class ACTPolicy(PreTrainedPolicy):
         config.validate_features()
         self.config = config
 
-        self.model = ACT(config)
+        self.model = ACM2(config)
 
         if config.temporal_ensemble_coeff is not None:
             self.temporal_ensembler = ACTTemporalEnsembler(config.temporal_ensemble_coeff, config.chunk_size)
@@ -140,7 +143,6 @@ class ACTPolicy(PreTrainedPolicy):
 
         actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
 
-        # Optional temporal weighting on the loss (mirrors ACM implementation).
         chunk_size = actions_hat.shape[1]
         n_steps = self.config.n_action_steps
         device = actions_hat.device
@@ -275,8 +277,8 @@ class ACTTemporalEnsembler:
         return action
 
 
-class ACT(nn.Module):
-    """Action Chunking Transformer: The underlying neural network for ACTPolicy.
+class ACM2(nn.Module):
+    """Action Chunking Transformer with Mamba-2 decoder: The underlying neural network for ACM2Policy.
 
     Note: In this code we use the terms `vae_encoder`, 'encoder', `decoder`. The meanings are as follows.
         - The `vae_encoder` is, as per the literature around variational auto-encoders (VAE), the part of the
@@ -310,7 +312,7 @@ class ACT(nn.Module):
                                 └───────────────────────┘
     """
 
-    def __init__(self, config: ACTConfig):
+    def __init__(self, config: ACM2Config):
         # BERT style VAE encoder with input tokens [cls, robot_state, *action_sequence].
         # The cls token forms parameters of the latent's distribution (like this [*means, *log_variances]).
         super().__init__()
@@ -355,7 +357,11 @@ class ACT(nn.Module):
 
         # Transformer (acts as VAE decoder when training with the variational objective).
         self.encoder = ACTEncoder(config)
-        self.decoder = ACTDecoder(config)
+
+        if config.use_mamba:
+            self.decoder = Mamba2ACMDecoder(config)
+        else:
+            self.decoder = ACTDecoder(config)
 
         # Transformer encoder input projections. The tokens will be structured like
         # [latent, (robot_state), (env_state), (image_feature_map_pixels)].
@@ -535,7 +541,7 @@ class ACT(nn.Module):
 class ACTEncoder(nn.Module):
     """Convenience module for running multiple encoder layers, maybe followed by normalization."""
 
-    def __init__(self, config: ACTConfig, is_vae_encoder: bool = False):
+    def __init__(self, config: ACM2Config, is_vae_encoder: bool = False):
         super().__init__()
         self.is_vae_encoder = is_vae_encoder
         num_layers = config.n_vae_encoder_layers if self.is_vae_encoder else config.n_encoder_layers
@@ -552,7 +558,7 @@ class ACTEncoder(nn.Module):
 
 
 class ACTEncoderLayer(nn.Module):
-    def __init__(self, config: ACTConfig):
+    def __init__(self, config: ACM2Config):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
 
@@ -590,8 +596,71 @@ class ACTEncoderLayer(nn.Module):
         return x
 
 
+class Mamba2ACMDecoder(nn.Module):
+    def __init__(self, config: ACM2Config):
+        super().__init__()
+
+        if not HAS_MAMBA2:
+            raise ImportError(
+                "Mamba2 is not available. Install or upgrade mamba-ssm: `pip install -U mamba-ssm`"
+            )
+
+        # Mamba-2 (SSD: State Space Duality)
+        # Constraint: dim_model * mamba2_expand must be divisible by mamba2_headdim.
+        d_inner = config.dim_model * config.mamba2_expand
+        if d_inner % config.mamba2_headdim != 0:
+            raise ValueError(
+                f"dim_model * mamba2_expand ({d_inner}) must be divisible by "
+                f"mamba2_headdim ({config.mamba2_headdim}). "
+                f"Adjust mamba2_headdim to a divisor of {d_inner}."
+            )
+
+        self.layers = nn.ModuleList(
+            [
+                Mamba2(
+                    d_model=config.dim_model,           # Model dimension
+                    d_state=config.mamba2_d_state,      # SSM state size (Mamba-2 supports larger via SSD)
+                    d_conv=config.mamba2_d_conv,        # Local convolution width
+                    expand=config.mamba2_expand,        # Block expansion factor
+                    headdim=config.mamba2_headdim,      # Head dimension (must divide d_inner)
+                    ngroups=config.mamba2_ngroups,      # Number of groups for grouped state
+                )
+                for _ in range(config.n_decoder_layers)
+            ]
+        )
+        self.norm = nn.LayerNorm(config.dim_model)
+
+    def forward(
+        self,
+        x: Tensor,  # Action Queries (Chunk Size, Batch, Dim)
+        encoder_out: Tensor,  # Context (Encoder Seq, Batch, Dim)
+        decoder_pos_embed: Tensor | None = None,
+        encoder_pos_embed: Tensor | None = None,
+    ) -> Tensor:
+        if decoder_pos_embed is not None:
+            x = x + decoder_pos_embed
+        if encoder_pos_embed is not None:
+            encoder_out = encoder_out + encoder_pos_embed
+
+        x = x.transpose(0, 1)
+        encoder_out = encoder_out.transpose(0, 1)
+
+        combined_seq = torch.cat([encoder_out, x], dim=1)
+
+        for layer in self.layers:
+            combined_seq = layer(combined_seq)
+
+        chunk_size = x.shape[1]
+        out = combined_seq[:, -chunk_size:, :]
+
+        if self.norm is not None:
+            out = self.norm(out)
+
+        return out.transpose(0, 1)
+
+
 class ACTDecoder(nn.Module):
-    def __init__(self, config: ACTConfig):
+    def __init__(self, config: ACM2Config):
         """Convenience module for running multiple decoder layers followed by normalization."""
         super().__init__()
         self.layers = nn.ModuleList([ACTDecoderLayer(config) for _ in range(config.n_decoder_layers)])
@@ -614,7 +683,7 @@ class ACTDecoder(nn.Module):
 
 
 class ACTDecoderLayer(nn.Module):
-    def __init__(self, config: ACTConfig):
+    def __init__(self, config: ACM2Config):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
         self.multihead_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
