@@ -65,16 +65,8 @@ class ACMPolicy(PreTrainedPolicy):
 
         self.model = ACM(config)
 
-        ##ACM용으로 수정
-        
         if config.temporal_ensemble_coeff is not None:
-            self.temporal_ensembler = ACMChunkEnsembler(
-                temporal_ensemble_coeff=config.temporal_ensemble_coeff, 
-                chunk_size=config.chunk_size,
-                n_action_steps=config.n_action_steps,
-            )
-        else:
-            self.temporal_ensembler = None
+            self.temporal_ensembler = ACTTemporalEnsembler(config.temporal_ensemble_coeff, config.chunk_size)
 
         self.reset()
 
@@ -101,10 +93,11 @@ class ACMPolicy(PreTrainedPolicy):
 
     def reset(self):
         """This should be called whenever the environment is reset."""
-        self._action_queue = deque([], maxlen=self.config.n_action_steps)
-        if self.temporal_ensembler is not None:
+        if self.config.temporal_ensemble_coeff is not None:
             self.temporal_ensembler.reset()
-            
+        else:
+            self._action_queue = deque([], maxlen=self.config.n_action_steps)
+
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
         """Select a single action given environment observations.
@@ -115,18 +108,10 @@ class ACMPolicy(PreTrainedPolicy):
         """
         self.eval()  # keeping the policy in eval mode as it could be set to train mode while queue is consumed
 
-        ##ACM용으로 수정
-        
-        if len(self._action_queue) == 0:
-            actions = self.predict_action_chunk(batch)  # (batch, chunk_size, action_dim)
-            if self.temporal_ensembler is not None:
-                actions_to_enqueue = self.temporal_ensembler.update(actions)
-            else:
-                actions_to_enqueue = actions[:, : self.config.n_action_steps]
-                
-            self._action_queue.extend(actions_to_enqueue.transpose(0, 1))
-            
-        return self._action_queue.popleft()
+        if self.config.temporal_ensemble_coeff is not None:
+            actions = self.predict_action_chunk(batch)
+            action = self.temporal_ensembler.update(actions)
+            return action
 
         # Action queue logic for n_action_steps > 1. When the action_queue is depleted, populate it by
         # querying the policy.
@@ -200,174 +185,6 @@ class ACMPolicy(PreTrainedPolicy):
 
         return loss, loss_dict
 
-## ACM용으로 수정
-class ACMChunkEnsembler:
-    """
-        새 chunk가 들어오면 이전 chunk와 겹치는 k-m 구간을 정렬
-        weighted averge나 smoothing하고 실행할 m개의 action을 변환
-
-        k=5, m=3이면
-        첫 chunk에 0 1 2 3 4 예측
-        0~2 실행
-
-        다음 chunk에 3 4 5 6 7 예측
-        3~5 실행
-
-        이때 k-m, 즉 3 4 부분이 겹침
-        
-        이전 chunk의 뒤 k-m개와 새 chunk의 앞 k-m개를 가중 평균해서 부드럽게 잇고
-        그 결과 chunk에서 앞 m개를 실행 queue에 넣는 방식으로 구현
-
-        즉 
-        첫 번째 chunk [0 1 2] 실행
-        두 번째 chunk [ens(3) ens(4) 5] 실행
-        세 번째 chunk [ens(6) ens(7) 8] 실행
-    """
-    def __init__(
-        self,
-        temporal_ensemble_coeff: float,
-        chunk_size: int,
-        n_action_steps: int,
-    ) -> None:
-        """ACM-style temporal ensembling for chunked actions.
-
-        Consecutive chunks overlap by (chunk_size - n_action_steps).
-
-        Example:
-            k=5, m=3
-            chunk1: [0, 1, 2, 3, 4] -> execute [0, 1, 2], keep [3, 4]
-            chunk2: [3, 4, 5, 6, 7]
-                    overlap [3, 4] with previous [3, 4]
-                    -> execute [ens(3), ens(4), 5]
-                    -> keep [6, 7]
-
-        Weight rule is kept identical to ACTTemporalEnsembler:
-            w_i = exp(-temporal_ensemble_coeff * i)
-        where w_0 is the oldest prediction for the same real timestep.
-        """
-        if chunk_size <= 0:
-            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
-        if n_action_steps <= 0:
-            raise ValueError(f"n_action_steps must be positive, got {n_action_steps}")
-        if n_action_steps > chunk_size:
-            raise ValueError(
-                f"n_action_steps ({n_action_steps}) cannot be larger than chunk_size ({chunk_size})"
-            )
-
-        self.chunk_size = chunk_size           # k
-        self.n_action_steps = n_action_steps   # m
-        self.overlap = chunk_size - n_action_steps  # k - m
-
-        # Same real timestep can appear in multiple chunks.
-        # With window k and stride m, max repetition is ceil(k / m).
-        self.max_predictions_per_timestep = math.ceil(chunk_size / n_action_steps)
-
-        self.ensemble_weights = torch.exp(
-            -temporal_ensemble_coeff * torch.arange(self.max_predictions_per_timestep)
-        )
-        self.ensemble_weights_cumsum = torch.cumsum(self.ensemble_weights, dim=0)
-
-        self.reset()
-
-    def reset(self):
-        """Reset episode state."""
-        self.ensembled_actions = None
-        # shape: (current_seq_len, 1)
-        self.ensembled_actions_count = None
-
-    def update(self, actions: Tensor) -> Tensor:
-        """
-        Args:
-            actions: (batch, chunk_size, action_dim)
-
-        Returns:
-            (batch, n_action_steps, action_dim)
-            The next m actions to enqueue / execute.
-        """
-        if actions.ndim != 3:
-            raise ValueError(
-                f"`actions` must have shape (batch, chunk_size, action_dim), got {tuple(actions.shape)}"
-            )
-        if actions.shape[1] != self.chunk_size:
-            raise ValueError(
-                f"`actions.shape[1]` must equal chunk_size={self.chunk_size}, got {actions.shape[1]}"
-            )
-
-        self.ensemble_weights = self.ensemble_weights.to(device=actions.device)
-        self.ensemble_weights_cumsum = self.ensemble_weights_cumsum.to(device=actions.device)
-
-        if self.ensembled_actions is None:
-            # First chunk in episode: initialize directly.
-            self.ensembled_actions = actions.clone()
-            self.ensembled_actions_count = torch.ones(
-                (self.chunk_size, 1),
-                dtype=torch.long,
-                device=actions.device,
-            )
-        else:
-            # After consuming m actions previously, only k-m future actions should remain.
-            expected_len = self.overlap
-            current_len = self.ensembled_actions.shape[1]
-            if current_len != expected_len:
-                raise RuntimeError(
-                    f"Internal sequence length mismatch: expected {expected_len}, got {current_len}"
-                )
-
-            if self.overlap > 0:
-                # Overlapping region:
-                # previous tail: (B, k-m, D)
-                # current head : (B, k-m, D)
-                prev_tail = self.ensembled_actions
-                curr_head = actions[:, : self.overlap]
-
-                # Convert old average back to weighted sum.
-                prev_tail *= self.ensemble_weights_cumsum[self.ensembled_actions_count - 1]
-
-                # Add new prediction with next exponential weight.
-                prev_tail += curr_head * self.ensemble_weights[self.ensembled_actions_count]
-
-                # Normalize back to weighted average.
-                prev_tail /= self.ensemble_weights_cumsum[self.ensembled_actions_count]
-
-                # Update overlap counts.
-                self.ensembled_actions_count = torch.clamp(
-                    self.ensembled_actions_count + 1,
-                    max=self.max_predictions_per_timestep,
-                )
-
-                # Fresh part from new chunk (length = m)
-                fresh_tail = actions[:, self.overlap :]
-
-                self.ensembled_actions = torch.cat([prev_tail, fresh_tail], dim=1)
-                self.ensembled_actions_count = torch.cat(
-                    [
-                        self.ensembled_actions_count,
-                        torch.ones(
-                            (self.n_action_steps, 1),
-                            dtype=torch.long,
-                            device=actions.device,
-                        ),
-                    ],
-                    dim=0,
-                )
-            else:
-                # No overlap case: chunk_size == n_action_steps
-                self.ensembled_actions = actions.clone()
-                self.ensembled_actions_count = torch.ones(
-                    (self.chunk_size, 1),
-                    dtype=torch.long,
-                    device=actions.device,
-                )
-
-        # Return first m actions.
-        actions_to_execute = self.ensembled_actions[:, : self.n_action_steps]
-
-        # Keep remaining k-m actions for next update.
-        self.ensembled_actions = self.ensembled_actions[:, self.n_action_steps :]
-        self.ensembled_actions_count = self.ensembled_actions_count[self.n_action_steps :]
-
-        return actions_to_execute
-        
 
 class ACTTemporalEnsembler:
     def __init__(self, temporal_ensemble_coeff: float, chunk_size: int) -> None:
