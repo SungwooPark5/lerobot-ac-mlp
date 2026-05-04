@@ -128,6 +128,14 @@ class ACTConfig(PreTrainedConfig):
     # Note: the value used in ACT when temporal ensembling is enabled is 0.01.
     temporal_ensemble_coeff: float | None = None
 
+
+    ## Learned temporal ensemble
+    # When True, the model outputs a per-position logit alongside each action. At inference
+    # When True, the model outputs a softmax-normalized to produce data-conditional ensemble
+    # weights. At training, L=ensemble_size consecutive observations are used so the softmax actually participates in the loss and the weight head receives gradient.
+    use_learned_ensemble: bool = False
+    ensemble_size: int = 2
+    
     # Training and loss computation.
     dropout: float = 0.1
     kl_weight: float = 10.0
@@ -150,6 +158,21 @@ class ACTConfig(PreTrainedConfig):
                 "`n_action_steps` must be 1 when using temporal ensembling. This is "
                 "because the policy needs to be queried every step to compute the ensembled action."
             )
+
+        ## add validation
+        if self.use_learned_ensemble:
+            if self.temporal_ensemble_coeff is not None:
+                raise ValueError(
+                    "use_learned_ensemble'and 'temporal_ensemble_coeff' are mutaully execlusive."
+                )
+            if self.n_action_steps >1:
+                raise ValueError(
+                    "'n_action_steps'must be 1 when 'use_learned_ensemble' is True."
+                )
+            if self.ensemble_size <2:
+                raise ValueError(
+                    f"'ensemble_size' must be >= 2. Got {self.ensemble_size}."
+                )
         if self.n_action_steps > self.chunk_size:
             raise ValueError(
                 f"The chunk size is the upper bound for the number of action steps per model invocation. Got "
@@ -173,12 +196,17 @@ class ACTConfig(PreTrainedConfig):
         if not self.image_features and not self.env_state_feature:
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
 
+    ##
     @property
-    def observation_delta_indices(self) -> None:
+    def observation_delta_indices(self) -> list|None:
+        if self.use_learned_ensemble:
+            return list(range(self.ensemble_size))
         return None
 
     @property
     def action_delta_indices(self) -> list:
+        if self.use_learned_ensemble:
+            return list(range(self.chunk_size+self.ensemble_size-1))
         return list(range(self.chunk_size))
 
     @property
