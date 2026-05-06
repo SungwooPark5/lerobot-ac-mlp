@@ -140,8 +140,31 @@ class ACTPolicy(PreTrainedPolicy):
 
         actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
 
+        # Optional temporal weighting on the loss (mirrors ACM implementation).
+        chunk_size = actions_hat.shape[1]
+        n_steps = self.config.n_action_steps
+        device = actions_hat.device
+
+        weights = torch.ones(chunk_size, device=device)
+
+        use_weighting = getattr(self.config, "use_temporal_weighting", False)
+        exec_weight_mass = getattr(self.config, "temporal_execution_weight", 0.9)
+
+        if use_weighting and n_steps < chunk_size:
+            future_weight_mass = 1.0 - exec_weight_mass
+
+            w_exec = (chunk_size * exec_weight_mass) / n_steps
+            w_future = (chunk_size * future_weight_mass) / (chunk_size - n_steps)
+
+            weights[:n_steps] = w_exec
+            weights[n_steps:] = w_future
+
+        weights = weights.view(1, -1, 1)
+
         l1_loss = (
-            F.l1_loss(batch[ACTION], actions_hat, reduction="none") * ~batch["action_is_pad"].unsqueeze(-1)
+            F.l1_loss(batch[ACTION], actions_hat, reduction="none")
+            * ~batch["action_is_pad"].unsqueeze(-1)
+            * weights
         ).mean()
 
         loss_dict = {"l1_loss": l1_loss.item()}

@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 from .act.configuration_act import ACTConfig as ACTConfig
 from .acm.configuration_acm import ACMConfig as ACMConfig
+from .acm2.configuration_acm2 import ACM2Config as ACM2Config
 from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
 from .groot.configuration_groot import GrootConfig as GrootConfig
 from .pi0.configuration_pi0 import PI0Config as PI0Config
@@ -27,6 +29,7 @@ from .xvla.configuration_xvla import XVLAConfig as XVLAConfig
 __all__ = [
     "ACTConfig",
     "ACMConfig",
+    "ACM2Config",
     "DiffusionConfig",
     "PI0Config",
     "PI05Config",

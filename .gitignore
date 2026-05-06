@@ -165,7 +165,6 @@ wandb/
 
 # Data folders
 data/
-outputs/
 
 # Translations
 *.mo
@@ -183,3 +182,5 @@ outputs/eval/**/videos/
 *.mp4
 *.avi
 *.mov
+
+outputs/

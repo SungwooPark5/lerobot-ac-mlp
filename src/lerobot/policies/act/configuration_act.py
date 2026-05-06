@@ -128,6 +128,11 @@ class ACTConfig(PreTrainedConfig):
     # Note: the value used in ACT when temporal ensembling is enabled is 0.01.
     temporal_ensemble_coeff: float | None = None
 
+    # Configuration for temporal weighting (training-time loss weighting).
+    # Mirrors ACM's implementation so the two decoders can be compared on equal footing.
+    use_temporal_weighting: bool = False
+    temporal_execution_weight: float = 0.9
+
     # Training and loss computation.
     dropout: float = 0.1
     kl_weight: float = 10.0
