@@ -68,7 +68,15 @@ class ACTPolicy(PreTrainedPolicy):
           self.learned_ensembler = ACTLearnedTemporalEnsembler(
               config.chunk_size, config.ensemble_size
           )                                                                     
-                                          
+      # Plan C: freeze action components, train only weight_decoder + weight_head
+      if config.freeze_action:
+          for n, p in self.named_parameters():
+              if "weight_decoder" not in n and "weight_head" not in n:
+                  p.requires_grad_(False)
+          n_train = sum(p.numel() for p in self.parameters() if p.requires_grad)
+          n_total = sum(p.numel() for p in self.parameters())
+          print(f"[freeze_action] Trainable: {n_train:,} / {n_total:,} "
+              f"({100*n_train/n_total:.2f}%)")                   
       self.reset()                                                                                                                                    
               
   def get_optim_params(self) -> dict:                                                                                                                 
@@ -109,7 +117,7 @@ class ACTPolicy(PreTrainedPolicy):
       environment. It works by managing the actions in a queue and only calling `select_actions` when the                                             
       queue is empty.                                                                                                                                 
       """                                                                                                                                             
-      self.eval()  # keeping the policy in eval mode as it could be set to train mode while queue is consumed                                         
+      self.eval()  # keeping the policy in eval mode as it could be set to train mode while queue is consumed
                                                                                                                                                       
       if self.config.temporal_ensemble_coeff is not None:                                                                                             
           actions = self.predict_action_chunk(batch)                                                                                                  
@@ -123,7 +131,7 @@ class ACTPolicy(PreTrainedPolicy):
               batch = dict(batch)
               batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features]                                                                  
           actions, logits, _ = self.model(batch)
-          action = self.learned_ensembler.update(actions, logits)                                                                                     
+          action = self.learned_ensembler.update(actions, logits)                                                                                    
           return action                                                                                                                               
                                       
       # Action queue logic for n_action_steps > 1. When the action_queue is depleted, populate it by                                                  
@@ -133,7 +141,7 @@ class ACTPolicy(PreTrainedPolicy):
                                           
           # `self.model.forward` returns a (batch_size, n_action_steps, action_dim) tensor, but the queue                                             
           # effectively has shape (n_action_steps, batch_size, *), hence the transpose.
-          self._action_queue.extend(actions.transpose(0, 1))                                                                                          
+          self._action_queue.extend(actions.transpose(0, 1))                                                                                         
       return self._action_queue.popleft()                                                                                                             
                                                                                                                                                       
   @torch.no_grad()                                                                                                                                    
@@ -205,30 +213,30 @@ class ACTPolicy(PreTrainedPolicy):
           all_weight_logits.append(logits_k)       # (B, L)                                                                                               
           if mu_k is not None:
               mus.append(mu_k); log_sigmas.append(log_sigma_k)
-                                                                                                                                                          
-      # τ별 ensemble: full-coverage τ만 loss에 포함                                                                                                       
-      ensembled, coverage_mask = [], []                                                                                                                   
-      for tau in range(total_T):                                                                                                                          
+                                                                                                     
+      # τ별 ensemble: full-coverage 전체에 supervision (cheating은 detach로 봉쇄)
+      ensembled, coverage_mask = [], []
+
+      for tau in range(total_T):
           k_min = max(0, tau - chunk_size + 1)
-          k_max = min(L - 1, tau)                                                                                                                         
+          k_max = min(L - 1, tau)
           n = k_max - k_min + 1
-                                                                                                                                                          
+
           if n < L:
-              ensembled.append(torch.zeros_like(all_actions[0][:, 0]))                                                                                    
+              ensembled.append(torch.zeros_like(all_actions[0][:, 0]))
               coverage_mask.append(False)
               continue
 
-          # contribs freshest→oldest                                                                                                                      
           contribs_a = torch.stack(
-              [all_actions[k][:, tau - k] for k in range(k_max, k_min - 1, -1)],                                                                          
-              dim=1,                                                                                                                                      
-          )  # (B, L, action_dim)
-                                                                                                                                                          
-          # freshest chunk의 logits 사용 (index 0 = freshest)                                                                                             
-          logits = all_weight_logits[k_max]              # (B, L)
-          w = F.softmax(logits, dim=1).unsqueeze(-1)     # (B, L, 1)                                                                                      
-          ensembled.append((w * contribs_a).sum(dim=1)) # (B, action_dim)                                                                                 
-          coverage_mask.append(True)
+              [all_actions[k][:, tau - k].detach() for k in range(k_max, k_min - 1, -1)],
+              dim=1,
+          )
+
+          logits = all_weight_logits[k_max]  # detach 안 함 (weight head 학습 필요)
+          w = F.softmax(logits, dim=1).unsqueeze(-1)
+
+          ensembled.append((w * contribs_a).sum(dim=1))
+          coverage_mask.append(True)    
                                                                                                                                                           
       ensembled = torch.stack(ensembled, dim=1)          # (B, total_T, action_dim)
       coverage = torch.tensor(coverage_mask, device=ensembled.device)                                                                                     
@@ -237,20 +245,33 @@ class ACTPolicy(PreTrainedPolicy):
       target = batch[ACTION]                                                                                                                              
       diff = F.l1_loss(target, ensembled, reduction="none") * mask.unsqueeze(-1)                                                                          
       denom = mask.sum().clamp(min=1) * target.shape[-1]                                                                                                  
-      l1_loss = diff.sum() / denom                                                                                                                        
-                                                                                                                                                          
-      loss_dict = {"l1_loss": l1_loss.item()}                                                                                                             
+      l1_loss = diff.sum() / denom
+
+      # 기존 ensemble loss 끝난 직후 (loss_dict 만들기 전) 
+      ind_loss = 0.0
+      for k in range(L):
+            target_k = batch[ACTION][:, k : k + chunk_size]
+            pad_k = batch["action_is_pad"][:, k : k + chunk_size]
+            ind_loss = ind_loss + (
+                F.l1_loss(target_k, all_actions[k], reduction="none")
+                * (~pad_k).unsqueeze(-1)
+                ).mean()
+            
+      ind_loss = ind_loss / L
+      loss_dict = {"l1_loss": l1_loss.item(), "ind_l1": ind_loss.item()}
       if self.config.use_vae and mus:
-          mu_all = torch.cat(mus, dim=0)                                                                                                                  
-          log_sigma_all = torch.cat(log_sigmas, dim=0)
-          mean_kld = (                                                                                                                                    
-              (-0.5 * (1 + log_sigma_all - mu_all.pow(2) - log_sigma_all.exp())).sum(-1).mean()
-          )                                                                                                                                               
-          loss_dict["kld_loss"] = mean_kld.item()
-          loss = l1_loss + mean_kld * self.config.kl_weight                                                                                               
-      else:                                                                                                                                               
-          loss = l1_loss
-      return loss, loss_dict              
+            mu_all = torch.cat(mus, dim=0)
+            log_sigma_all = torch.cat(log_sigmas, dim=0)
+            mean_kld = (
+                (-0.5 * (1 + log_sigma_all - mu_all.pow(2) - log_sigma_all.exp()))
+                .sum(-1)
+                .mean()
+            )
+            loss_dict["kld_loss"] = mean_kld.item()
+            loss = l1_loss + ind_loss + mean_kld * self.config.kl_weight
+      else:
+            loss = l1_loss + ind_loss
+      return loss, loss_dict        
                                                                                                                                                       
               
 class ACTTemporalEnsembler:                                                                                                                             
@@ -372,21 +393,29 @@ class ACTLearnedTemporalEnsembler:
     def reset(self):                                                                                                                                    
         self.past_chunks = deque(maxlen=self.L)
                                                                                                                                                         
-    def update(self, actions: Tensor, weight_logits: Tensor) -> Tensor:                                                                                 
-        # actions: (B, chunk_size, action_dim)
-        # weight_logits: (B, L)  — index 0 = freshest contributor                                                                                       
-        self.past_chunks.append(actions)                                                                                                                
-        n = len(self.past_chunks)
-                                                                                                                                                        
-        # contribs[:, i] = i step 이전 chunk의 τ=current 예측 (i=0: 방금 emit, i=n-1: 가장 옛것)                                                        
-        contribs = torch.stack(                                                                                                                         
-            [self.past_chunks[-(i + 1)][:, i] for i in range(n)], dim=1                                                                                 
-        )  # (B, n, action_dim)                                                                                                                         
 
-        # warm-up: n < L이면 앞 n개 logit만 사용 (자연스러운 슬라이스)                                                                                  
-        active = weight_logits[:, :n]
-        w = F.softmax(active, dim=1).unsqueeze(-1)  # (B, n, 1)                                                                                         
-        return (w * contribs).sum(dim=1)             # (B, action_dim)                                                                                                                                   
+    def update(self, actions, weight_logits):
+        self.past_chunks.append(actions)                                                                                                                               
+        n = len(self.past_chunks)
+        contribs = torch.stack([self.past_chunks[-(i+1)][:, i] for i in range(n)], dim=1)                                                                              
+        active = weight_logits[:, :n]                                                                                                                                  
+        w = F.softmax(active, dim=1).unsqueeze(-1)                                                                                                                     
+                                                                                                                                                                     
+        # === 디버그 ===                                                                                                                                               
+        if not hasattr(self, "_dbg_count"):
+            self._dbg_count = 0
+
+        if self._dbg_count < 10:
+            print("=" * 80)
+            print(f"step {self._dbg_count}")
+            print("logits:", weight_logits[0].detach().cpu().tolist())
+            print("weights:", w[0, :, 0].detach().cpu().tolist())
+            entropy = -(w[0, :, 0] * torch.log(w[0, :, 0] + 1e-8)).sum()
+            print("entropy:", entropy.detach().cpu().item())
+            self._dbg_count += 1                                                                                                                                      
+        # ============                                                                                                                                                 
+                                                                                                                                                                     
+        return (w * contribs).sum(dim=1)                                                                                                                                 
                                                                                                                                                       
                                           
 class ACT(nn.Module):                                                                                                                                   
@@ -678,7 +707,7 @@ class ACT(nn.Module):
           logits = self.weight_head(weight_decoder_out).squeeze(-1)  # (B, L)                                                                                 
       else:                                                                                                                                                   
           logits = None                                                                                                                             
-      return actions, logits, (mu, log_sigma_x2)     # 얘는 살려두는게 맞는건가?                                                                                                 
+      return actions, logits, (mu, log_sigma_x2)
                                                                                                                                                       
                                                                                                                                                       
 class ACTEncoder(nn.Module):                                                                                                                            

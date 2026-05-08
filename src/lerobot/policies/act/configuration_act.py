@@ -135,6 +135,7 @@ class ACTConfig(PreTrainedConfig):
     # weights. At training, L=ensemble_size consecutive observations are used so the softmax actually participates in the loss and the weight head receives gradient.
     use_learned_ensemble: bool = False
     ensemble_size: int = 2
+    freeze_action: bool = False
     
     # Training and loss computation.
     dropout: float = 0.1
@@ -173,6 +174,9 @@ class ACTConfig(PreTrainedConfig):
                 raise ValueError(
                     f"'ensemble_size' must be >= 2. Got {self.ensemble_size}."
                 )
+            if self.freeze_action and not self.use_learned_ensemble:
+                raise ValueError("'freeze_action' requires 'use_learned_ensemble=True'.")
+
         if self.n_action_steps > self.chunk_size:
             raise ValueError(
                 f"The chunk size is the upper bound for the number of action steps per model invocation. Got "
