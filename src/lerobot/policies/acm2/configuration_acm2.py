@@ -78,7 +78,7 @@ class ACM2Config(PreTrainedConfig):
     n_decoder_layers: int = 1
 
     # Mamba-2 (SSD) decoder configuration.
-    mamba2_d_state: int = 64
+    mamba2_d_state: int = 128
     mamba2_d_conv: int = 4
     mamba2_expand: int = 2
     mamba2_headdim: int = 64
