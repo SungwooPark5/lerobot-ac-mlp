@@ -301,9 +301,10 @@ class ACM2(nn.Module):
         self._reset_parameters()
 
     def _reset_parameters(self):
-        """Xavier-uniform initialization of the transformer parameters as in the original code."""
+        """Xavier-uniform init for transformer params; preserve Mamba2's internal init."""
+        mamba_param_ids = {id(p) for p in self.decoder.layers.parameters()}
         for p in chain(self.encoder.parameters(), self.decoder.parameters()):
-            if p.dim() > 1:
+            if p.dim() > 1 and id(p) not in mamba_param_ids:
                 nn.init.xavier_uniform_(p)
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
