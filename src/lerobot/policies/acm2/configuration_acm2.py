@@ -82,6 +82,7 @@ class ACM2Config(PreTrainedConfig):
     mamba2_d_conv: int = 4
     mamba2_expand: int = 2
     mamba2_headdim: int = 64
+    mamba2_chunk_size: int = 256  # SSD kernel chunk size (distinct from action chunk_size)
 
     # Configuration for temporal weighting.
     use_temporal_weighting: bool = False

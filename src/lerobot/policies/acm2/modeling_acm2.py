@@ -487,8 +487,10 @@ class Mamba2ACMDecoder(nn.Module):
                     d_conv=config.mamba2_d_conv,
                     expand=config.mamba2_expand,
                     headdim=config.mamba2_headdim,
+                    chunk_size=config.mamba2_chunk_size,
+                    layer_idx=i,
                 )
-                for _ in range(config.n_decoder_layers)
+                for i in range(config.n_decoder_layers)
             ]
         )
         self.norm = nn.LayerNorm(config.dim_model)
