@@ -619,8 +619,9 @@ class MambaACMDecoder(nn.Module):
                     d_state=config.mamba_d_state,  # SSM state expansion factor
                     d_conv=config.mamba_d_conv,  # Local convolution width
                     expand=config.mamba_expand,  # Block expansion factor
+                    layer_idx=i,  # Enables inference state caching
                 )
-                for _ in range(config.n_decoder_layers)
+                for i in range(config.n_decoder_layers)
             ]
         )
         self.norm = nn.LayerNorm(config.dim_model)
