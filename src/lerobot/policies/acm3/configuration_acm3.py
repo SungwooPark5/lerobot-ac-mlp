@@ -156,6 +156,12 @@ class ACM3Config(PreTrainedConfig):
                     f"({chunk_rank_product}) must not exceed 64 (bf16) / 32 (fp32). "
                     f"Got chunk_size={self.mamba3_chunk_size}, mimo_rank={self.mamba3_mimo_rank}."
                 )
+        # Mamba-3 internally asserts rope_fraction in {0.5, 1.0}; surface it at config-time.
+        if self.mamba3_rope_fraction not in (0.5, 1.0):
+            raise ValueError(
+                f"mamba3_rope_fraction must be 0.5 or 1.0 (Mamba-3 internal assert). "
+                f"Got {self.mamba3_rope_fraction}."
+            )
 
     def get_optimizer_preset(self) -> AdamWConfig:
         return AdamWConfig(
