@@ -398,9 +398,18 @@ class ACM(nn.Module):
         self._reset_parameters()
 
     def _reset_parameters(self):
-        """Xavier-uniform initialization of the transformer parameters as in the original code."""
+        """Xavier-uniform init for transformer params; preserve Mamba's internal init.
+
+        Mamba-1's A_log is 2D (d_inner, d_state) with S4D real init, so the p.dim() > 1
+        guard alone does not protect it. Skip all parameters owned by MambaACMDecoder.layers
+        when present, otherwise apply Xavier as in the original ACT code.
+        """
+        if isinstance(self.decoder, MambaACMDecoder):
+            mamba_param_ids = {id(p) for p in self.decoder.layers.parameters()}
+        else:
+            mamba_param_ids = set()
         for p in chain(self.encoder.parameters(), self.decoder.parameters()):
-            if p.dim() > 1:
+            if p.dim() > 1 and id(p) not in mamba_param_ids:
                 nn.init.xavier_uniform_(p)
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
