@@ -32,6 +32,7 @@ from lerobot.envs.utils import env_to_policy_features
 from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.acm.configuration_acm import ACMConfig
 from lerobot.policies.acm2.configuration_acm2 import ACM2Config
+from lerobot.policies.acm3.configuration_acm3 import ACM3Config
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.groot.configuration_groot import GrootConfig
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
@@ -93,6 +94,11 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.acm2.modeling_acm2 import ACM2Policy
 
         return ACM2Policy
+
+    elif name == "acm3":
+        from lerobot.policies.acm3.modeling_acm3 import ACM3Policy
+
+        return ACM3Policy
 
     elif name == "vqbet":
         from lerobot.policies.vqbet.modeling_vqbet import VQBeTPolicy
@@ -162,6 +168,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACMConfig(**kwargs)
     elif policy_type == "acm2":
         return ACM2Config(**kwargs)
+    elif policy_type == "acm3":
+        return ACM3Config(**kwargs)
     elif policy_type == "vqbet":
         return VQBeTConfig(**kwargs)
     elif policy_type == "pi0":
@@ -318,6 +326,14 @@ def make_pre_post_processors(
         from lerobot.policies.acm2.processor_acm2 import make_acm2_pre_post_processors
 
         processors = make_acm2_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACM3Config):
+        from lerobot.policies.acm3.processor_acm3 import make_acm3_pre_post_processors
+
+        processors = make_acm3_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

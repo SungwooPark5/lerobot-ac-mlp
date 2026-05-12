@@ -16,6 +16,7 @@
 from .act.configuration_act import ACTConfig as ACTConfig
 from .acm.configuration_acm import ACMConfig as ACMConfig
 from .acm2.configuration_acm2 import ACM2Config as ACM2Config
+from .acm3.configuration_acm3 import ACM3Config as ACM3Config
 from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
 from .groot.configuration_groot import GrootConfig as GrootConfig
 from .pi0.configuration_pi0 import PI0Config as PI0Config
@@ -30,6 +31,7 @@ __all__ = [
     "ACTConfig",
     "ACMConfig",
     "ACM2Config",
+    "ACM3Config",
     "DiffusionConfig",
     "PI0Config",
     "PI05Config",
