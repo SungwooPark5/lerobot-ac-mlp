@@ -29,8 +29,11 @@ class ACM3Config(PreTrainedConfig):
     Unlike Mamba-2, Mamba-3 drops the 1D convolutional component, integrates RoPE inside the SSM,
     and exposes an optional MIMO (Multiple-Input Multiple-Output) mode with configurable rank.
 
-    Defaults follow the canonical Mamba-3 setup recommended in the state-spaces/mamba README
-    (d_state=128, headdim=64, is_mimo=True, mimo_rank=4, chunk_size=16 for bf16).
+    Defaults: SISO mode (is_mimo=False) because the MIMO TileLang kernel requires
+    >99 KB per-block shared memory which exceeds sm 8.x consumer / Ada limits.
+    SISO still uses Mamba-3's RoPE, trapezoidal time-mixing, QK-norm, and BC bias.
+    To enable MIMO on A100/H100, override at runtime:
+        --policy.mamba3_is_mimo=true --policy.mamba3_chunk_size=16
 
     Args:
         n_obs_steps: Number of environment steps worth of observations to pass to the policy.
@@ -84,7 +87,13 @@ class ACM3Config(PreTrainedConfig):
     n_encoder_layers: int = 4
     n_decoder_layers: int = 1
 
-    # Mamba-3 decoder configuration (canonical defaults from state-spaces/mamba README).
+    # Mamba-3 decoder configuration.
+    # Default = SISO mode. The flagship MIMO mode (is_mimo=True) requires per-block
+    # shared memory > 99 KB which exceeds sm 8.x (Ampere consumer / Ada) limits;
+    # only A100 (sm 8.0 ~164 KB) and H100 (sm 9.0 ~228 KB) class GPUs support it.
+    # SISO still includes Mamba-3's RoPE, trapezoidal time-mixing, QK-norm, BC bias.
+    # To enable MIMO on supported hardware, override at runtime:
+    #   --policy.mamba3_is_mimo=true --policy.mamba3_chunk_size=16
     # Note: Mamba-3 has no d_conv (the 1D conv component was dropped vs Mamba-2).
     mamba3_d_state: int = 128
     mamba3_expand: int = 2
@@ -92,9 +101,9 @@ class ACM3Config(PreTrainedConfig):
     mamba3_ngroups: int = 1
     mamba3_rope_fraction: float = 0.5
     mamba3_is_outproj_norm: bool = False
-    mamba3_is_mimo: bool = True
-    mamba3_mimo_rank: int = 4
-    mamba3_chunk_size: int = 16  # canonical for is_mimo=True with bf16: 64/mimo_rank
+    mamba3_is_mimo: bool = False
+    mamba3_mimo_rank: int = 4  # only used when is_mimo=True
+    mamba3_chunk_size: int = 64  # SISO canonical (Mamba3 source comment); MIMO would use 64/mimo_rank
 
     # Configuration for temporal weighting.
     use_temporal_weighting: bool = False
