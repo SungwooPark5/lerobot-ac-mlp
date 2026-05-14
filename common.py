@@ -1,8 +1,8 @@
-"""v2 실험 공통 모듈.
-모든 v2 노트북이 이 파일을 import하여 사용한다.
+"""v3 실험 공통 모듈.
+모든 v3 노트북이 이 파일을 import하여 사용한다.
 Usage (노트북 첫 셀):
     import sys, os
-    sys.path.insert(0, os.path.dirname(os.path.abspath('.')))  # v2/ 폴더를 path에 추가
+    sys.path.insert(0, os.path.dirname(os.path.abspath('.')))  # v3/ 폴더를 path에 추가
     from common import *
 """
 import os, sys, subprocess, json, glob, shutil, re
@@ -40,27 +40,20 @@ TASK = 'AlohaTransferCube-v0'
 DATASET = 'lerobot/aloha_sim_transfer_cube_human'
 BS = 8
 
-# V2 defaults
-EVAL_FREQ = 10000       # 본 학습 평가 주기
-SAVE_FREQ = 10000       # 체크포인트 저장 주기
-LOG_FREQ = 50           # 로그 주기
-EVAL_EP = 50            # 본 학습 중 평가 에피소드 (분해능 2%)
+# V3 defaults
+EVAL_FREQ = 10000
+SAVE_FREQ = 10000
+LOG_FREQ = 50
+EVAL_EP = 50
 EVAL_EPISODES_FINAL = 100  # 본 평가
-
-# LR screening 전용 (평가 시간 절약)
-LR_EVAL_FREQ = 20000    # 100k에서 5회만 평가
-LR_EVAL_EP = 20         # 분해능 5%, v1(10)보다 나음
-LR_SAVE_FREQ = 50000    # LR screening은 체크포인트 2개면 충분
 
 # Model configs
 MODEL_CONFIGS = {
-    # v1 결과 기반 LR 최적화:
-    # ACT v1 best=1e-5, ACM v1 best=3e-5, 1e-4는 발산, 1e-6은 수렴 느림
-    # → sweet spot (5e-5 ~ 5e-6) 구간을 촘촘하게 탐색
-    'act':       {'type': 'act',       'k_list': [50, 100, 150, 200, 300, 400], 'lr_list': ['5e-5', '3e-5', '2e-5', '1e-5', '7e-6', '5e-6']},
-    'acm':       {'type': 'acm',       'k_list': [50, 100, 150, 200, 300, 400], 'lr_list': ['4e-5', '3e-5', '2e-5', '1e-5', '7e-6', '5e-6']},
-    'acm2':      {'type': 'acm2',      'k_list': [50, 100, 150, 200, 300, 400], 'lr_list': ['5e-5', '3e-5', '2e-5', '1e-5', '7e-6', '5e-6']},
-    'diffusion': {'type': 'diffusion', 'k_list': [50, 100, 150, 200, 300, 400], 'lr_list': ['1e-4', '5e-5', '3e-5', '1e-5', '5e-6', '1e-6']},
+    'act':       {'type': 'act',       'k_list': [50, 100, 150, 200, 300, 400], 'lr_list': ['1e-4', '1e-5', '1e-6']},
+    'acm':       {'type': 'acm',       'k_list': [50, 100, 150, 200, 300, 400], 'lr_list': ['1e-4', '1e-5', '1e-6']},
+    'acm2':      {'type': 'acm2',      'k_list': [50, 100, 150, 200, 300, 400], 'lr_list': ['1e-4', '1e-5', '1e-6']},
+    'acm3':      {'type': 'acm3',      'k_list': [50, 100, 150, 200, 300, 400], 'lr_list': ['1e-4', '1e-5', '1e-6']},
+    'diffusion': {'type': 'diffusion', 'k_list': [50, 100, 150, 200, 300, 400], 'lr_list': ['1e-4', '1e-5', '1e-6']},
 }
 SEEDS = [0, 1, 2]
 
@@ -71,8 +64,8 @@ def detect_gpus():
 
 
 def base_dir(seed=0, sub=''):
-    """outputs/v2_seed{seed}/{sub}"""
-    p = os.path.join(PROJECT, 'outputs', f'v2_seed{seed}', sub)
+    """outputs/v3_seed{seed}/{sub}"""
+    p = os.path.join(PROJECT, 'outputs', f'v3_seed{seed}', sub)
     os.makedirs(p, exist_ok=True)
     return p
 
