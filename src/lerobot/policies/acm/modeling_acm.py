@@ -614,7 +614,11 @@ class MambaACMDecoder(nn.Module):
                 for _ in range(config.n_decoder_layers)
             ]
         )
-        self.norm = nn.LayerNorm(config.dim_model)
+        self.norms = nn.ModuleList(
+            [nn.LayerNorm(config.dim_model) for _ in range(config.n_decoder_layers)]
+        )
+
+        self.norm_final = nn.LayerNorm(config.dim_model)
 
     def forward(
         self,
@@ -633,14 +637,17 @@ class MambaACMDecoder(nn.Module):
 
         combined_seq = torch.cat([encoder_out, x], dim=1)
 
-        for layer in self.layers:
+        for norm, layer in zip(self.norms, self.layers):
+            residual = combined_seq
+            combined_seq = norm(combined_seq)
             combined_seq = layer(combined_seq)
+            combined_seq = combined_seq + residual
 
         chunk_size = x.shape[1]
         out = combined_seq[:, -chunk_size:, :]
 
-        if self.norm is not None:
-            out = self.norm(out)
+        if self.norm_final is not None:
+            out = self.norm_final(out)
 
         return out.transpose(0, 1)
 
