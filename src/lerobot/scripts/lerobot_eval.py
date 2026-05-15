@@ -336,6 +336,13 @@ def eval_policy(
     if max_episodes_rendered > 0:
         video_paths: list[str] = []
 
+    ##수정
+    action_logs_dir = None
+    if videos_dir is not None:
+        action_logs_dir = videos_dir.parent / "action_logs"
+        action_logs_dir.mkdir(parents=True, exist_ok=True)
+    ##
+    
     if return_episode_data:
         episode_data: dict | None = None
 
@@ -364,6 +371,26 @@ def eval_policy(
             return_observations=return_episode_data,
             render_callback=render_frame if max_episodes_rendered > 0 else None,
         )
+
+        ##수정
+        # Save per-episode action logs for jitter analysis
+        if action_logs_dir is not None:
+            n_steps = rollout_data["done"].shape[1]
+            done_indices = torch.argmax(rollout_data["done"].to(int), dim=1)
+
+            for env_idx in range(rollout_data[ACTION].shape[0]):
+                ep_len = done_indices[env_idx].item() + 1  # include done step
+                episode_actions = rollout_data[ACTION][env_idx, :ep_len].cpu()
+
+                save_ep_idx = batch_ix * env.num_envs + env_idx
+                torch.save(
+                    {
+                        "actions": episode_actions,   # (T, action_dim)
+                        "done_index": done_indices[env_idx].item(),
+                    },
+                    action_logs_dir / f"episode_{save_ep_idx:04d}.pt",
+                )
+        ##
         
         if "mean_latency" in rollout_data:
             all_mean_latencies.append(rollout_data["mean_latency"])
@@ -590,9 +617,14 @@ def eval_main(cfg: EvalPipelineConfig):
     close_envs(envs)
 
     # Save info
-    with open(Path(cfg.output_dir) / "eval_info.json", "w") as f:
+    save_path = Path(cfg.output_dir) / "eval" / "eval_info.json"
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(save_path, "w") as f:
         json.dump(info, f, indent=2)
-
+    
+    print(f"[SAVE] eval_info.json 저장됨: {save_path}")
+    
     logging.info("End of eval")
 
 
