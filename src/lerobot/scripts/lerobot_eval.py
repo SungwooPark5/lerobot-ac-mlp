@@ -339,6 +339,12 @@ def eval_policy(
     if return_episode_data:
         episode_data: dict | None = None
 
+    # action_logs for jitter analysis
+    action_logs_dir = None
+    if videos_dir is not None:
+        action_logs_dir = videos_dir.parent / "action_logs"
+        action_logs_dir.mkdir(parents=True, exist_ok=True)
+
     # we dont want progress bar when we use slurm, since it clutters the logs
     progbar = trange(n_batches, desc="Stepping through eval batches", disable=inside_slurm())
     for batch_ix in progbar:
@@ -373,6 +379,17 @@ def eval_policy(
         n_steps = rollout_data["done"].shape[1]
         # Note: this relies on a property of argmax: that it returns the first occurrence as a tiebreaker.
         done_indices = torch.argmax(rollout_data["done"].to(int), dim=1)
+
+        # Save per-episode action logs for jitter analysis
+        if action_logs_dir is not None:
+            for env_idx in range(rollout_data[ACTION].shape[0]):
+                ep_len = done_indices[env_idx].item() + 1
+                episode_actions = rollout_data[ACTION][env_idx, :ep_len].cpu()
+                save_ep_idx = batch_ix * env.num_envs + env_idx
+                torch.save(
+                    {"actions": episode_actions, "done_index": done_indices[env_idx].item()},
+                    action_logs_dir / f"episode_{save_ep_idx:04d}.pt",
+                )
 
         # Make a mask with shape (batch, n_steps) to mask out rollout data after the first done
         # (batch-element-wise). Note the `done_indices + 1` to make sure to keep the data from the done step.
