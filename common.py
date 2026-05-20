@@ -187,6 +187,32 @@ def get_m_list(k):
     return sorted(set(ms))
 
 
+def compute_jitter(eval_dir):
+    """action_logs/*.pt에서 에피소드별 jitter(프레임간 action 변화량 평균) 계산. 없으면 nan."""
+    import torch as _torch
+    logs_dir = os.path.join(eval_dir, 'action_logs')
+    pts = sorted(glob.glob(os.path.join(logs_dir, 'episode_*.pt')))
+    if not pts:
+        return float('nan')
+    jitters = []
+    for p in pts:
+        try:
+            d = _torch.load(p, map_location='cpu', weights_only=True)
+            actions = d['actions']  # (T, action_dim)
+            if actions.shape[0] < 2:
+                continue
+            diffs = actions[1:] - actions[:-1]
+            jitters.append(diffs.norm(dim=-1).mean().item())
+        except Exception:
+            pass
+    return float('nan') if not jitters else sum(jitters) / len(jitters)
+
+
+def load_jitter(eval_dir):
+    """eval_dir에서 jitter 값 반환. compute_jitter의 alias."""
+    return compute_jitter(eval_dir)
+
+
 def collect_eval_results(prefix, eval_dir):
     """prefix='act' etc → [(k, m, sr), ...] 내림차순"""
     results = []
