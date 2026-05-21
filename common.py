@@ -190,7 +190,15 @@ def get_m_list(k):
 def compute_jitter(eval_dir):
     """action_logs/*.pt에서 에피소드별 jitter(프레임간 action 변화량 평균) 계산. 없으면 nan."""
     import torch as _torch
-    logs_dir = os.path.join(eval_dir, 'action_logs')
+    # action_logs가 eval_dir 바로 아래 또는 videos/ 아래 있을 수 있음
+    for candidate in [os.path.join(eval_dir, 'action_logs'),
+                      os.path.join(eval_dir, 'videos', 'action_logs')]:
+        if os.path.isdir(candidate):
+            logs_dir = candidate
+            break
+    else:
+        return float('nan')
+    # 기존 로직 (logs_dir 결정 후 동일)
     pts = sorted(glob.glob(os.path.join(logs_dir, 'episode_*.pt')))
     if not pts:
         return float('nan')
