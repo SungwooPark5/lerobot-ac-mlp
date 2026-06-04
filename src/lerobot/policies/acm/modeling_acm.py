@@ -462,10 +462,16 @@ class ACM(nn.Module):
             # Prepare key padding mask for the transformer encoder. We have 1 or 2 extra tokens at the start of the
             # sequence depending whether we use the input states or not (cls and robot state)
             # False means not a padding token.
+            if OBS_ENV_STATE in batch:
+                _ref = batch[OBS_ENV_STATE]
+            elif OBS_STATE in batch:
+                _ref = batch[OBS_STATE]
+            else:
+                _ref = next(v for v in batch.values() if v is not None and hasattr(v, 'device'))
             cls_joint_is_pad = torch.full(
                 (batch_size, 2 if self.config.robot_state_feature else 1),
                 False,
-                device=batch[OBS_STATE].device,
+                device=_ref.device,
             )
             key_padding_mask = torch.cat(
                 [cls_joint_is_pad, batch["action_is_pad"]], axis=1

@@ -231,8 +231,14 @@ class ACTICPE(nn.Module):
             latent = mu + log_sigma_x2.div(2).exp() * torch.randn_like(mu)
         else:
             mu = log_sigma_x2 = None
+            if OBS_ENV_STATE in batch:
+                _ref = batch[OBS_ENV_STATE]
+            elif OBS_STATE in batch:
+                _ref = batch[OBS_STATE]
+            else:
+                _ref = next(v for v in batch.values() if v is not None and hasattr(v, 'device'))
             latent = torch.zeros(batch_size, self.config.latent_dim,
-                                 dtype=torch.float32, device=batch[OBS_STATE].device)
+                                 dtype=torch.float32, device=_ref.device)
 
         # ── Encoder ───────────────────────────────────────────────────────────
         enc_tokens = [self.encoder_latent_input_proj(latent)]

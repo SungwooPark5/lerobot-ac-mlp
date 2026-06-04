@@ -314,10 +314,16 @@ class ACM3(nn.Module):
 
             pos_embed = self.vae_encoder_pos_enc.clone().detach()
 
+            if OBS_ENV_STATE in batch:
+                _ref = batch[OBS_ENV_STATE]
+            elif OBS_STATE in batch:
+                _ref = batch[OBS_STATE]
+            else:
+                _ref = next(v for v in batch.values() if v is not None and hasattr(v, 'device'))
             cls_joint_is_pad = torch.full(
                 (batch_size, 2 if self.config.robot_state_feature else 1),
                 False,
-                device=batch[OBS_STATE].device,
+                device=_ref.device,
             )
             key_padding_mask = torch.cat(
                 [cls_joint_is_pad, batch["action_is_pad"]], axis=1
