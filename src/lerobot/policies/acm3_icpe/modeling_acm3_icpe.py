@@ -242,8 +242,11 @@ class ACM3ICPE(nn.Module):
             latent = mu + log_sigma_x2.div(2).exp() * torch.randn_like(mu)
         else:
             mu = log_sigma_x2 = None
+            _ref = batch.get(OBS_ENV_STATE) or batch.get(OBS_STATE) or next(
+                v for v in batch.values() if v is not None and hasattr(v, 'device')
+            )
             latent = torch.zeros(batch_size, config.latent_dim,
-                                 dtype=torch.float32, device=next(iter(batch.values())).device)
+                                 dtype=torch.float32, device=_ref.device)
 
         # Encoder tokens
         tokens = [self.encoder_latent_input_proj(latent)]  # (B, D) each
