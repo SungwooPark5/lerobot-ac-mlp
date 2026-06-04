@@ -30,9 +30,12 @@ from lerobot.datasets.utils import dataset_to_policy_features
 from lerobot.envs.configs import EnvConfig
 from lerobot.envs.utils import env_to_policy_features
 from lerobot.policies.act.configuration_act import ACTConfig
+from lerobot.policies.act_icpe.configuration_act_icpe import ACTICPEConfig
 from lerobot.policies.acm.configuration_acm import ACMConfig
 from lerobot.policies.acm2.configuration_acm2 import ACM2Config
 from lerobot.policies.acm3.configuration_acm3 import ACM3Config
+from lerobot.policies.acm3_icpe.configuration_acm3_icpe import ACM3ICPEConfig
+from lerobot.policies.acm3_icpe_tsscp.configuration_acm3_icpe_tsscp import ACM3ICPETSSCPConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.groot.configuration_groot import GrootConfig
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
@@ -99,6 +102,21 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.acm3.modeling_acm3 import ACM3Policy
 
         return ACM3Policy
+
+    elif name == "acm3_icpe":
+        from lerobot.policies.acm3_icpe.modeling_acm3_icpe import ACM3ICPEPolicy
+
+        return ACM3ICPEPolicy
+
+    elif name == "acm3_icpe_tsscp":
+        from lerobot.policies.acm3_icpe_tsscp.modeling_acm3_icpe_tsscp import ACM3ICPETSSCPPolicy
+
+        return ACM3ICPETSSCPPolicy
+
+    elif name == "act_icpe":
+        from lerobot.policies.act_icpe.modeling_act_icpe import ACTICPEPolicy
+
+        return ACTICPEPolicy
 
     elif name == "vqbet":
         from lerobot.policies.vqbet.modeling_vqbet import VQBeTPolicy
@@ -170,6 +188,12 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACM2Config(**kwargs)
     elif policy_type == "acm3":
         return ACM3Config(**kwargs)
+    elif policy_type == "acm3_icpe":
+        return ACM3ICPEConfig(**kwargs)
+    elif policy_type == "acm3_icpe_tsscp":
+        return ACM3ICPETSSCPConfig(**kwargs)
+    elif policy_type == "act_icpe":
+        return ACTICPEConfig(**kwargs)
     elif policy_type == "vqbet":
         return VQBeTConfig(**kwargs)
     elif policy_type == "pi0":
