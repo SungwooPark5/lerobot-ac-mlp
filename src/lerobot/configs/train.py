@@ -55,6 +55,7 @@ class TrainPipelineConfig(HubMixin):
     batch_size: int = 8
     steps: int = 100_000
     eval_freq: int = 20_000
+    eval_start_step: int = 0  # eval을 시작할 step (이전 step은 eval 건너뜀)
     log_freq: int = 200
     tolerance_s: float = 1e-4
     save_checkpoint: bool = True
