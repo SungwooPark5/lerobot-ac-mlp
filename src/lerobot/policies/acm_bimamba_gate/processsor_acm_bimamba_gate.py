@@ -17,7 +17,7 @@ from typing import Any
 
 import torch
 
-from lerobot.policies.acm_bimamba.configuration_acm_bimamba import ACMBiMambaConfig
+from lerobot.policies.acm_bimamba_gate.configuration_acm_bimamba_gate import ACMBiMambaGateConfig
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     DeviceProcessorStep,
@@ -31,8 +31,8 @@ from lerobot.processor.converters import policy_action_to_transition, transition
 from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
 
 
-def make_acm_bimamba_pre_post_processors(
-    config: ACMBiMambaConfig,
+def make_acm_bimamba_gate_pre_post_processors(
+    config: ACMBiMambaGateConfig,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
 ) -> tuple[
     PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],

@@ -39,17 +39,17 @@ try:
 except ImportError:
     HAS_MAMBA = False
 
-from lerobot.policies.acm.configuration_acm import ACMConfig
+from lerobot.policies.acm_moe.configuration_acm_moe import ACMMoEConfig
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
-class ACMPolicy(PreTrainedPolicy):
-    config_class = ACMConfig
-    name = "acm"
+class ACMMoEPolicy(PreTrainedPolicy):
+    config_class = ACMMoEConfig
+    name = "acm_moe"
 
     def __init__(
         self,
-        config: ACMConfig,
+        config: ACMMoEConfig,
     ):
         """
         Args:
@@ -365,7 +365,7 @@ class ACM(nn.Module):
                                 └───────────────────────┘
     """
 
-    def __init__(self, config: ACMConfig):
+    def __init__(self, config: ACMMoEConfig):
         # BERT style VAE encoder with input tokens [cls, robot_state, *action_sequence].
         # The cls token forms parameters of the latent's distribution (like this [*means, *log_variances]).
         super().__init__()
@@ -719,7 +719,7 @@ class ACM(nn.Module):
 class ACTEncoder(nn.Module):
     """Convenience module for running multiple encoder layers, maybe followed by normalization."""
 
-    def __init__(self, config: ACMConfig, is_vae_encoder: bool = False):
+    def __init__(self, config: ACMMoEConfig, is_vae_encoder: bool = False):
         super().__init__()
         self.is_vae_encoder = is_vae_encoder
         num_layers = config.n_vae_encoder_layers if self.is_vae_encoder else config.n_encoder_layers
@@ -735,7 +735,7 @@ class ACTEncoder(nn.Module):
         return x
 
 class ACTEncoderLayer(nn.Module):
-    def __init__(self, config: ACMConfig):
+    def __init__(self, config: ACMMoEConfig):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
 
@@ -773,7 +773,7 @@ class ACTEncoderLayer(nn.Module):
         return x
 
 class MambaACMDecoder(nn.Module):
-    def __init__(self, config: ACMConfig):
+    def __init__(self, config: ACMMoEConfig):
         super().__init__()
 
         if not HAS_MAMBA:
@@ -866,7 +866,7 @@ class MambaACMDecoder(nn.Module):
         return out.transpose(0, 1)
 
 class ACTDecoder(nn.Module):
-    def __init__(self, config: ACMConfig):
+    def __init__(self, config: ACMMoEConfig):
         """Convenience module for running multiple decoder layers followed by normalization."""
         super().__init__()
         self.layers = nn.ModuleList([ACTDecoderLayer(config) for _ in range(config.n_decoder_layers)])
@@ -888,7 +888,7 @@ class ACTDecoder(nn.Module):
         return x
 
 class ACTDecoderLayer(nn.Module):
-    def __init__(self, config: ACMConfig):
+    def __init__(self, config: ACMMoEConfig):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
         self.multihead_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)

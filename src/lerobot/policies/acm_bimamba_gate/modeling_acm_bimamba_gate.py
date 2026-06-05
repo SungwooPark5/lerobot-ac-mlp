@@ -39,19 +39,17 @@ try:
 except ImportError:
     HAS_MAMBA = False
 
-
-from lerobot.policies.acm_refiner.configuration_acm_refiner import ACMRefineConfig
+from lerobot.policies.acm_bimamba_gate.configuration_acm_bimamba_gate import ACMBiMambaGateConfig
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
-
-class ACMRefinePolicy(PreTrainedPolicy):
-    config_class = ACMRefineConfig
-    name = "acm_refiner"
+class ACMBiMambaGatePolicy(PreTrainedPolicy):
+    config_class = ACMBiMambaGateConfig
+    name = "acm_bimamba_gate"
 
     def __init__(
         self,
-        config: ACMRefineConfig,
+        config: ACMBiMambaGateConfig,
     ):
         """
         Args:
@@ -170,67 +168,6 @@ class ACMRefinePolicy(PreTrainedPolicy):
 
         loss_dict = {"l1_loss": l1_loss.item()}
 
-        # ------------------------------------------------------------
-        # Final action jerk loss
-        # Purpose:
-        #   Give the refiner a smoothness objective.
-        #
-        # actions_hat is the final action output from:
-        #   decoder_out -> action_head -> raw_actions -> action_conv_refiner
-        #
-        # Therefore, this loss backpropagates through the refiner.
-        #
-        # jerk[t] = a[t+3] - 3a[t+2] + 3a[t+1] - a[t]
-        # ------------------------------------------------------------
-        action_jerk_loss = None
-        action_jerk_weight = getattr(self.config, "action_jerk_weight", 0.0)
-
-        if action_jerk_weight > 0.0 and actions_hat.shape[1] >= 4:
-            pad_mask = ~batch["action_is_pad"]  # (B, T)
-
-            action_jerk = (
-                actions_hat[:, 3:]
-                - 3.0 * actions_hat[:, 2:-1]
-                + 3.0 * actions_hat[:, 1:-2]
-                - actions_hat[:, :-3]
-            )
-
-            jerk_mask = (
-                pad_mask[:, 3:]
-                & pad_mask[:, 2:-1]
-                & pad_mask[:, 1:-2]
-                & pad_mask[:, :-3]
-            )
-
-            jerk_denom = jerk_mask.sum().clamp(min=1) * actions_hat.shape[-1]
-
-            action_jerk_loss = (
-                action_jerk.pow(2) * jerk_mask.unsqueeze(-1)
-            ).sum() / jerk_denom
-
-            loss_dict["action_jerk_loss"] = action_jerk_loss.item()
-
-        delta = getattr(self.model, "last_action_delta", None)
-        delta_mag_loss = None
-        delta_smooth_loss = None
-
-        if delta is not None:
-            pad_mask = ~batch["action_is_pad"]  # (B, T)
-
-            valid_delta = delta * pad_mask.unsqueeze(-1)
-            denom = pad_mask.sum().clamp(min=1) * delta.shape[-1]
-            delta_mag_loss = valid_delta.pow(2).sum() / denom
-
-            delta_diff = delta[:, 1:] - delta[:, :-1]
-            diff_mask = pad_mask[:, 1:] & pad_mask[:, :-1]
-            diff_denom = diff_mask.sum().clamp(min=1) * delta.shape[-1]
-            delta_smooth_loss = (
-                delta_diff.pow(2) * diff_mask.unsqueeze(-1)
-            ).sum() / diff_denom
-
-            loss_dict["delta_mag_loss"] = delta_mag_loss.item()
-            loss_dict["delta_smooth_loss"] = delta_smooth_loss.item()
-
         if self.config.use_vae:
             # Calculate Dₖₗ(latent_pdf || standard_normal). Note: After computing the KL-divergence for
             # each dimension independently, we sum over the latent dimension to get the total
@@ -244,15 +181,7 @@ class ACMRefinePolicy(PreTrainedPolicy):
         else:
             loss = l1_loss
 
-        if delta_mag_loss is not None:
-            loss = loss + self.config.delta_magnitude_weight * delta_mag_loss
-            loss = loss + self.config.delta_smoothness_weight * delta_smooth_loss
-
-        if action_jerk_loss is not None:
-            loss = loss + action_jerk_weight * action_jerk_loss
-
         return loss, loss_dict
-
 
 class ACTTemporalEnsembler:
     def __init__(self, temporal_ensemble_coeff: float, chunk_size: int) -> None:
@@ -344,83 +273,6 @@ class ACTTemporalEnsembler:
         )
         return action
 
-class ActionConvRefinerBlock(nn.Module):
-    """
-    Action-space ConvNeXt-style residual refinement.
-
-    Input:
-        raw_actions: (B, T, action_dim)
-
-    Output:
-        refined_actions: raw_actions + alpha * delta
-    """
-
-    def __init__(
-        self,
-        action_dim: int,
-        hidden_dim: int = 128,
-        kernel_size: int = 7,
-        expansion: int = 2,
-        alpha_init: float = 0.1,
-    ):
-        super().__init__()
-
-        self.in_proj = nn.Linear(action_dim, hidden_dim)
-
-        self.norm = nn.LayerNorm(hidden_dim)
-
-        self.dwconv = nn.Conv1d(
-            hidden_dim,
-            hidden_dim,
-            kernel_size=kernel_size,
-            padding=kernel_size // 2,
-            groups=hidden_dim,
-        )
-
-        self.pwconv1 = nn.Conv1d(
-            hidden_dim,
-            expansion * hidden_dim,
-            kernel_size=1,
-        )
-
-        self.pwconv2 = nn.Conv1d(
-            expansion * hidden_dim,
-            hidden_dim,
-            kernel_size=1,
-        )
-
-        self.out_proj = nn.Linear(hidden_dim, action_dim)
-        self.act = nn.GELU()
-
-        # 시작 시 delta=0 → final=raw_actions
-        nn.init.zeros_(self.out_proj.weight)
-        nn.init.zeros_(self.out_proj.bias)
-
-        # 고정이 아니라 학습 가능 scale
-        self.alpha = nn.Parameter(torch.tensor(alpha_init))
-
-    def forward(self, raw_actions: Tensor) -> Tensor:
-        residual = raw_actions
-
-        x = self.in_proj(raw_actions)     # (B, T, H)
-        x = self.norm(x)
-
-        x = x.transpose(1, 2)             # (B, H, T)
-        x = self.dwconv(x)
-        x = self.act(x)
-
-        x = self.pwconv1(x)
-        x = self.act(x)
-        x = self.pwconv2(x)
-
-        x = x.transpose(1, 2)             # (B, T, H)
-
-        delta = self.out_proj(x)
-        scale = torch.tanh(self.alpha)
-        self.last_delta = scale * delta
-
-        return residual + self.last_delta
-
 class ACM(nn.Module):
     """Action Chunking Transformer: The underlying neural network for ACMPolicy.
 
@@ -456,7 +308,7 @@ class ACM(nn.Module):
                                 └───────────────────────┘
     """
 
-    def __init__(self, config: ACMRefineConfig):
+    def __init__(self, config: ACMBiMambaGateConfig):
         # BERT style VAE encoder with input tokens [cls, robot_state, *action_sequence].
         # The cls token forms parameters of the latent's distribution (like this [*means, *log_variances]).
         super().__init__()
@@ -539,21 +391,13 @@ class ACM(nn.Module):
         # Final action regression head on the output of the transformer's decoder.
         self.action_head = nn.Linear(config.dim_model, self.config.action_feature.shape[0])
 
-        # ★ Action-space Conv refiner
-        if getattr(config, "use_action_conv_refiner", False):
-            self.action_conv_refiner = ActionConvRefinerBlock(
-                action_dim=self.config.action_feature.shape[0],
-                hidden_dim=getattr(config, "action_refiner_hidden_dim", 128),
-                kernel_size=getattr(config, "action_refiner_kernel_size", 7),
-                expansion=getattr(config, "action_refiner_expansion", 2),
-                alpha_init=getattr(config, "action_refiner_alpha_init", 0.1),
-            )
-        else:
-            self.action_conv_refiner = None
-
         self._reset_parameters()
 
     def _reset_parameters(self):
+        """Xavier initialization for Transformer parts only.
+        Do not overwrite Mamba's internal initialization.
+        """
+
         for p in self.encoder.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
@@ -565,15 +409,12 @@ class ACM(nn.Module):
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
         """A forward pass through the Action Chunking Transformer (with optional VAE encoder).
-
         `batch` should have the following structure:
         {
             [robot_state_feature] (optional): (B, state_dim) batch of robot states.
-
             [image_features]: (B, n_cameras, C, H, W) batch of images.
                 AND/OR
             [env_state_feature]: (B, env_dim) batch of environment states.
-
             [action_feature] (optional, only if training with VAE): (B, chunk_size, action dim) batch of actions.
         }
 
@@ -690,18 +531,8 @@ class ACM(nn.Module):
             decoder_pos_embed=self.decoder_pos_embed.weight.unsqueeze(1),
         )
 
-        # Move back to (B, S, C).
         decoder_out = decoder_out.transpose(0, 1)
-
-        self.last_action_delta = None
-
-        raw_actions = self.action_head(decoder_out)
-
-        if self.action_conv_refiner is not None:
-            actions = self.action_conv_refiner(raw_actions)
-            self.last_action_delta = self.action_conv_refiner.last_delta
-        else:
-            actions = raw_actions
+        actions = self.action_head(decoder_out)
 
         return actions, (mu, log_sigma_x2)
 
@@ -709,7 +540,7 @@ class ACM(nn.Module):
 class ACTEncoder(nn.Module):
     """Convenience module for running multiple encoder layers, maybe followed by normalization."""
 
-    def __init__(self, config: ACMRefineConfig, is_vae_encoder: bool = False):
+    def __init__(self, config: ACMBiMambaGateConfig, is_vae_encoder: bool = False):
         super().__init__()
         self.is_vae_encoder = is_vae_encoder
         num_layers = config.n_vae_encoder_layers if self.is_vae_encoder else config.n_encoder_layers
@@ -724,9 +555,8 @@ class ACTEncoder(nn.Module):
         x = self.norm(x)
         return x
 
-
 class ACTEncoderLayer(nn.Module):
-    def __init__(self, config: ACMRefineConfig):
+    def __init__(self, config: ACMBiMambaGateConfig):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
 
@@ -763,31 +593,76 @@ class ACTEncoderLayer(nn.Module):
             x = self.norm2(x)
         return x
 
-
 class MambaACMDecoder(nn.Module):
-    def __init__(self, config: ACMRefineConfig):
+    def __init__(self, config: ACMBiMambaGateConfig):
         super().__init__()
 
         if not HAS_MAMBA:
             raise ImportError("Mamba-ssm is not installed. Please install it to use 'use_mamba=true'")
 
-        self.layers = nn.ModuleList(
-            [
-                Mamba(
-                    d_model=config.dim_model,  # Model dimension
-                    d_state=config.mamba_d_state,  # SSM state expansion factor
-                    d_conv=config.mamba_d_conv,  # Local convolution width
-                    expand=config.mamba_expand,  # Block expansion factor
-                )
-                for _ in range(config.n_decoder_layers)
-            ]
-        )
-        self.norms = nn.ModuleList(
-            [nn.LayerNorm(config.dim_model) for _ in range(config.n_decoder_layers)]
-        )
+        self.use_bimamba_decoder = getattr(config, "use_bimamba_decoder", False)
 
-        self.norm_final = nn.LayerNorm(config.dim_model)
+        def make_mamba_layers():
+            return nn.ModuleList(
+                [
+                    Mamba(
+                        d_model=config.dim_model,
+                        d_state=config.mamba_d_state,
+                        d_conv=config.mamba_d_conv,
+                        expand=config.mamba_expand,
+                    )
+                    for _ in range(config.n_decoder_layers)
+                ]
+            )
 
+        if self.use_bimamba_decoder:
+            self.forward_layers = make_mamba_layers()
+            self.backward_layers = make_mamba_layers()
+            self.layers = None
+        else:
+            self.layers = make_mamba_layers()
+            self.forward_layers = None
+            self.backward_layers = None
+        
+        self.norm = nn.LayerNorm(config.dim_model)
+
+        # Bi-Mamba+ inspired decoder-level forget gate.
+        # This is independent of action self-attention.
+        self.use_bimamba_forget_gate = getattr(config, "use_bimamba_forget_gate", False)
+
+        if self.use_bimamba_forget_gate:
+            bimamba_local_kernel_size = int(getattr(config, "bimamba_local_kernel_size", 3))
+            assert bimamba_local_kernel_size % 2 == 1, "bimamba_local_kernel_size must be odd"
+
+            self.bimamba_fg_norm = nn.LayerNorm(config.dim_model)
+
+            self.bimamba_fg_local_conv = nn.Conv1d(
+                in_channels=config.dim_model,
+                out_channels=config.dim_model,
+                kernel_size=bimamba_local_kernel_size,
+                padding=bimamba_local_kernel_size // 2,
+                groups=1,
+            )
+            self.bimamba_fg_local_act = nn.SiLU()
+
+            self.bimamba_gate_scalar = getattr(config, "bimamba_gate_scalar", True)
+            gate_dim = 1 if self.bimamba_gate_scalar else config.dim_model
+
+            self.bimamba_fg_gate = nn.Linear(config.dim_model, gate_dim)
+
+            gate_init = float(getattr(config, "bimamba_forget_gate_init", 0.5))
+            gate_init = min(max(gate_init, 1e-4), 1.0 - 1e-4)
+            gate_bias = math.log(gate_init / (1.0 - gate_init))
+
+            nn.init.zeros_(self.bimamba_fg_gate.weight)
+            nn.init.constant_(self.bimamba_fg_gate.bias, gate_bias)
+        else:
+            self.bimamba_fg_norm = None
+            self.bimamba_fg_local_conv = None
+            self.bimamba_fg_local_act = None
+            self.bimamba_fg_gate = None
+            self.bimamba_gate_scalar = True
+        
     def forward(
         self,
         x: Tensor,  # Action Queries (Chunk Size, Batch, Dim)
@@ -805,23 +680,55 @@ class MambaACMDecoder(nn.Module):
 
         combined_seq = torch.cat([encoder_out, x], dim=1)
 
-        for norm, layer in zip(self.norms, self.layers):
-            residual = combined_seq
-            combined_seq = norm(combined_seq)
-            combined_seq = layer(combined_seq)
-            combined_seq = combined_seq + residual
+        if self.use_bimamba_decoder:
+            # Vim-style external bidirectional Mamba.
+            # Forward direction.
+            forward_seq = combined_seq
+            for layer in self.forward_layers:
+                forward_seq = layer(forward_seq)
+
+            # Backward direction.
+            backward_seq = combined_seq.flip([1])
+            for layer in self.backward_layers:
+                backward_seq = layer(backward_seq)
+            backward_seq = backward_seq.flip([1])
+
+            # Use average instead of sum to keep activation scale close to the original decoder.
+            combined_seq = 0.5 * (forward_seq + backward_seq)
+        else:
+            for layer in self.layers:
+                combined_seq = layer(combined_seq)
 
         chunk_size = x.shape[1]
-        out = combined_seq[:, -chunk_size:, :]
+        out = combined_seq[:, -chunk_size:, :]  # (B, T, D)
 
-        if self.norm_final is not None:
-            out = self.norm_final(out)
+        # Bi-Mamba+ inspired decoder-level forget gate.
+        # bi_out: global/bidirectional candidate from Vim-style BiMamba decoder.
+        # local_out: local temporal candidate from Conv1D over action hidden tokens.
+        # gate: how much to trust bi_out.
+        #
+        # This is NOT action self-attention.
+        if self.use_bimamba_decoder and self.use_bimamba_forget_gate:
+            bi_out = out
+
+            fg_norm = self.bimamba_fg_norm(out)  # [B, T, D]
+
+            local_out = fg_norm.transpose(1, 2)  # [B, D, T]
+            local_out = self.bimamba_fg_local_conv(local_out)
+            local_out = self.bimamba_fg_local_act(local_out)
+            local_out = local_out.transpose(1, 2)  # [B, T, D]
+
+            gate = torch.sigmoid(self.bimamba_fg_gate(fg_norm))  # [B,T,1] or [B,T,D]
+
+            out = gate * bi_out + (1.0 - gate) * local_out
+
+        if self.norm is not None:
+            out = self.norm(out)
 
         return out.transpose(0, 1)
 
-
 class ACTDecoder(nn.Module):
-    def __init__(self, config: ACMRefineConfig):
+    def __init__(self, config: ACMBiMambaGateConfig):
         """Convenience module for running multiple decoder layers followed by normalization."""
         super().__init__()
         self.layers = nn.ModuleList([ACTDecoderLayer(config) for _ in range(config.n_decoder_layers)])
@@ -842,9 +749,8 @@ class ACTDecoder(nn.Module):
             x = self.norm(x)
         return x
 
-
 class ACTDecoderLayer(nn.Module):
-    def __init__(self, config: ACMRefineConfig):
+    def __init__(self, config: ACMBiMambaGateConfig):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
         self.multihead_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
@@ -914,7 +820,6 @@ class ACTDecoderLayer(nn.Module):
             x = self.norm3(x)
         return x
 
-
 def create_sinusoidal_pos_embedding(num_positions: int, dimension: int) -> Tensor:
     """1D sinusoidal positional embeddings as in Attention is All You Need.
 
@@ -931,7 +836,6 @@ def create_sinusoidal_pos_embedding(num_positions: int, dimension: int) -> Tenso
     sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
     sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
     return torch.from_numpy(sinusoid_table).float()
-
 
 class ACTSinusoidalPositionEmbedding2d(nn.Module):
     """2D sinusoidal positional embeddings similar to what's presented in Attention Is All You Need.
@@ -985,7 +889,6 @@ class ACTSinusoidalPositionEmbedding2d(nn.Module):
         pos_embed = torch.cat((pos_embed_y, pos_embed_x), dim=3).permute(0, 3, 1, 2)  # (1, C, H, W)
 
         return pos_embed
-
 
 def get_activation_fn(activation: str) -> Callable:
     """Return an activation function given a string."""
