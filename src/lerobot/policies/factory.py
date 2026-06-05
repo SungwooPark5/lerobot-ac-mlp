@@ -36,6 +36,7 @@ from lerobot.policies.acm2.configuration_acm2 import ACM2Config
 from lerobot.policies.acm3.configuration_acm3 import ACM3Config
 from lerobot.policies.acm3_icpe.configuration_acm3_icpe import ACM3ICPEConfig
 from lerobot.policies.acm3_icpe_tsscp.configuration_acm3_icpe_tsscp import ACM3ICPETSSCPConfig
+from lerobot.policies.acm3_sscp.configuration_acm3_sscp import ACM3SSCPConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.groot.configuration_groot import GrootConfig
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
@@ -112,6 +113,11 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.acm3_icpe_tsscp.modeling_acm3_icpe_tsscp import ACM3ICPETSSCPPolicy
 
         return ACM3ICPETSSCPPolicy
+
+    elif name == "acm3_sscp":
+        from lerobot.policies.acm3_sscp.modeling_acm3_sscp import ACM3SSCPPolicy
+
+        return ACM3SSCPPolicy
 
     elif name == "act_icpe":
         from lerobot.policies.act_icpe.modeling_act_icpe import ACTICPEPolicy
@@ -192,6 +198,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACM3ICPEConfig(**kwargs)
     elif policy_type == "acm3_icpe_tsscp":
         return ACM3ICPETSSCPConfig(**kwargs)
+    elif policy_type == "acm3_sscp":
+        return ACM3SSCPConfig(**kwargs)
     elif policy_type == "act_icpe":
         return ACTICPEConfig(**kwargs)
     elif policy_type == "vqbet":
