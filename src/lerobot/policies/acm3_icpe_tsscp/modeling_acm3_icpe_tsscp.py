@@ -1,6 +1,6 @@
-"""ACM3 + ICPE + True SSM State Carryover Protocol (tSSCP)
+"""ACM3 + ICPE + SSM State Carryover Protocol (SSCP)
 
-How True SSCP works (inference):
+How SSCP works (inference):
   1. After chunk n, extract the Mamba3 decoder's LAST OUTPUT TOKEN:
        carry_n = decoder_out[:, -1:, :]   # (B, 1, D)
      This dense vector summarises the accumulated SSM context at the end of chunk n.
@@ -13,10 +13,10 @@ How True SSCP works (inference):
   3. The K action tokens are still extracted from the LAST K positions of combined_out.
 
 Why this is SSM-specific (not applicable to ACT Transformer):
-  - Mamba3 processes carry_n → encoder → decoder sequentially, so carry_n's hidden
-    state h propagates into all subsequent positions.
-  - In ACT (Transformer), adding carry_n as an extra attention key would not "warm up"
-    any hidden state; it would merely be an additional token in global attention.
+  - Mamba3 processes carry_n sequentially, so carry_n's hidden state propagates
+    into all subsequent positions.
+  - In ACT (Transformer), adding carry_n as an extra attention key does not warm up
+    any hidden state; it is merely another token in global attention.
 
 Training strategy (Chunk-Continuation):
   With probability tsscp_p_carry, the batch provides consecutive chunk pairs.
@@ -37,7 +37,7 @@ from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
 
 class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
-    """ACM3 + ICPE + True SSCP.
+    """ACM3 + ICPE + SSCP.
 
     Extends ACM3ICPEPolicy with:
       - Inference: carry the terminal decoder output token across chunk boundaries.
@@ -141,7 +141,7 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
             batch = dict(batch)
             batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features]
 
-        # Check if batch provides consecutive chunk pairs for tSSCP training
+        # Check if batch provides consecutive chunk pairs for SSCP training
         has_pairs = "action_n1" in batch
 
         if has_pairs and self.config.tsscp_p_carry > 0.0:

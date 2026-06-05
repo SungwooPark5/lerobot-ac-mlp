@@ -1,17 +1,17 @@
-"""Configuration for ACM3 + ICPE + True SSM State Carryover Protocol (tSSCP).
+"""Configuration for ACM3 + ICPE + SSM State Carryover Protocol (SSCP).
 
-True SSCP mechanism:
+SSCP mechanism:
   After chunk n, the Mamba3 decoder's terminal output token (the last decoder
   query position) is extracted as a dense carry vector (B, 1, D). At the start
   of chunk n+1 this carry token is prepended to the combined sequence so the SSM
   warms up from the previous chunk's context rather than h=0.
 
-  This is structurally distinct from ACM3_SSCP (action blending):
-    - ACM3_SSCP: post-processes actions with weighted average → ACT-compatible
-    - tSSCP:     injects hidden-state context into Mamba3's sequential scan → SSM-only
+  SSM-specific: prepending carry_n causes its hidden state to propagate into all
+  subsequent positions via Mamba3's sequential scan.  In a Transformer this would
+  merely be an additional attention key with no hidden-state warmup effect.
 
 Training with Chunk-Continuation pairs:
-  When `tsscp_use_chunk_pairs` is True, the trainer expects batches with keys
+  The trainer supplies consecutive chunk pairs
   {obs_n, action_n, action_is_pad_n, obs_n1, action_n1, action_is_pad_n1}.
   The carry extracted from chunk n is detached (no gradient) and prepended to
   chunk n+1's sequence. Loss is computed on both chunks.

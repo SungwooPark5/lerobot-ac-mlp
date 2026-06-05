@@ -1,4 +1,4 @@
-"""Configuration for ACM3 + True SSM State Carryover Protocol (SSCP).
+"""Configuration for ACM3 + SSM State Carryover Protocol (SSCP).
 
 SSCP mechanism (inference):
   After chunk n, the Mamba3 decoder's terminal output token (B, 1, D) is saved
@@ -6,9 +6,9 @@ SSCP mechanism (inference):
   combined sequence so the SSM warms up from the previous chunk's context instead
   of starting from h=0.
 
-  This is structurally distinct from the v4 action-blending approach:
-    - v4 aSSCP:  post-processes actions at the output level (ACT-compatible)
-    - True SSCP: injects hidden-state context into Mamba3's sequential scan (SSM-only)
+  SSM-specific: prepending carry_n causes its hidden state to propagate into all
+  subsequent positions via Mamba3's sequential scan.  In a Transformer this would
+  merely be an additional attention key with no hidden-state warmup effect.
 
 Training with Chunk-Continuation pairs:
   When sscp_p_carry > 0 the trainer supplies consecutive chunk pairs.

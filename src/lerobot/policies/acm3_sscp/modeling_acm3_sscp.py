@@ -1,6 +1,6 @@
 """ACM3 + True SSM State Carryover Protocol (SSCP)
 
-How True SSCP works (inference):
+How SSCP works (inference):
   1. After chunk n, extract the Mamba3 decoder's LAST OUTPUT TOKEN:
        carry_n = decoder_out[:, -1:, :]   # (B, 1, D)
      This dense vector summarises the accumulated SSM context at the end of chunk n.
@@ -125,7 +125,7 @@ class Mamba3SSCPDecoder(nn.Module):
 # ── Neural network module ──────────────────────────────────────────────────────
 
 class ACM3SSCP(nn.Module):
-    """ACM3 with True SSCP carry support (no ICPE)."""
+    """ACM3 with SSCP carry support (no ICPE)."""
 
     def __init__(self, config: ACM3SSCPConfig):
         super().__init__()

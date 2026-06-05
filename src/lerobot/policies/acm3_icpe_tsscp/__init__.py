@@ -1,1 +1,1 @@
-# ACM3 + ICPE + True SSM State Carryover Protocol (tSSCP)
+# ACM3 + ICPE + SSM State Carryover Protocol (SSCP)

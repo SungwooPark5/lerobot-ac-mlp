@@ -15,7 +15,7 @@ Key change vs ACM3:
 
 Also introduces Mamba3ICPEDecoder that accepts an optional `carry` tensor
 (B, 1, D). When provided, it is prepended to the combined sequence so the SSM
-warms up from a non-zero context — the basis of True SSCP.
+warms up from a non-zero context — the basis of SSCP.
 """
 
 import math
@@ -77,7 +77,7 @@ class Mamba3ICPEDecoder(nn.Module):
     Interface identical to Mamba3ACMDecoder, plus:
         carry (B, 1, D): if provided, prepended before encoder_out in the combined
                          sequence so the SSM initialises from previous chunk context
-                         instead of h=0.  This is the mechanism for True SSCP.
+                         instead of h=0.  This is the mechanism for SSCP.
 
     Note: decoder_pos_embed is NOT applied here — it is already added to decoder_in
     by the parent ACM3ICPE.forward() before calling this decoder.
@@ -286,7 +286,7 @@ class ACM3ICPE(nn.Module):
         """
         Args:
             batch: observation dict.
-            carry: (B, 1, D) carry token from previous chunk (for True SSCP).
+            carry: (B, 1, D) carry token from previous chunk (for SSCP).
         Returns:
             actions (B, K, action_dim), (mu, log_sigma_x2).
         """
