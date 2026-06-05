@@ -17,8 +17,8 @@ Training with Chunk-Continuation pairs:
   chunk n+1's sequence. Loss is computed on both chunks.
   When pairs are unavailable (p_carry=0), falls back to standard training.
 
-  tsscp_p_carry  : probability of using chunk-continuation training per batch
-  tsscp_detach   : whether to detach the carry tensor (True = stable, False = BPTT)
+  sscp_p_carry  : probability of using chunk-continuation training per batch
+  sscp_detach   : whether to detach the carry tensor (True = stable, False = BPTT)
 """
 
 from dataclasses import dataclass
@@ -33,8 +33,8 @@ class ACM3ICPETSSCPConfig(ACM3ICPEConfig):
     """ACM3 + ICPE + True SSM State Carryover Protocol."""
 
     # Inference carry
-    tsscp_enabled: bool = True   # if False, behaves identically to ACM3ICPE
+    sscp_enabled: bool = True   # if False, behaves identically to ACM3ICPE
 
     # Training
-    tsscp_p_carry: float = 0.5   # probability of chunk-continuation training per batch
-    tsscp_detach: bool = True    # detach carry at chunk boundary (True = stable)
+    sscp_p_carry: float = 0.5   # probability of chunk-continuation training per batch
+    sscp_detach: bool = True    # detach carry at chunk boundary (True = stable)

@@ -19,10 +19,10 @@ Why this is SSM-specific (not applicable to ACT Transformer):
     any hidden state; it is merely another token in global attention.
 
 Training strategy (Chunk-Continuation):
-  With probability tsscp_p_carry, the batch provides consecutive chunk pairs.
+  With probability sscp_p_carry, the batch provides consecutive chunk pairs.
   chunk n → compute carry (detach) → use as prefix for chunk n+1.
   Loss = L1(chunk_n) + L1(chunk_n+1).  Both computed identically to standard ACM3ICPE.
-  With probability (1 - tsscp_p_carry), standard training without carry.
+  With probability (1 - sscp_p_carry), standard training without carry.
 """
 
 from collections import deque
@@ -82,7 +82,7 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
             batch = dict(batch)
             batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features]
 
-        carry = self._carry if self.config.tsscp_enabled else None
+        carry = self._carry if self.config.sscp_enabled else None
 
         actions, _ = self.model(batch, carry=carry)
 
@@ -90,7 +90,7 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
         # model.forward returns (B, K, action_dim) via action_head.
         # We need the decoder's LAST OUTPUT BEFORE the action head.
         # We call model._encode + decoder directly to get decoder_out.
-        if self.config.tsscp_enabled:
+        if self.config.sscp_enabled:
             self._carry = self._extract_carry(batch)
 
         return actions
@@ -106,7 +106,7 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
         batch_size = (
             batch[OBS_IMAGES][0].shape[0] if OBS_IMAGES in batch else batch[OBS_ENV_STATE].shape[0]
         )
-        carry = self._carry if self.config.tsscp_enabled else None
+        carry = self._carry if self.config.sscp_enabled else None
 
         # Forward through encoder + decoder to get pre-head decoder_out
         encoder_out, _, _ = self.model._encode(batch, batch_size)
@@ -144,7 +144,7 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
         # Check if batch provides consecutive chunk pairs for SSCP training
         has_pairs = "action_n1" in batch
 
-        if has_pairs and self.config.tsscp_p_carry > 0.0:
+        if has_pairs and self.config.sscp_p_carry > 0.0:
             return self._forward_chunk_pair(batch)
         else:
             return self._forward_single(batch, carry=None)
@@ -216,7 +216,7 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
 
         # Last token of decoder output = carry for next chunk
         carry = dec_out_n[-1:, :, :].transpose(0, 1)  # (B, 1, D)
-        if self.config.tsscp_detach:
+        if self.config.sscp_detach:
             carry = carry.detach()
 
         # ── Chunk n+1 ─────────────────────────────────────────────────────────
