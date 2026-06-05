@@ -122,9 +122,29 @@ class ACMConfig(PreTrainedConfig):
 
     # Configuration for the Mamba ACM Decoder
     use_mamba: bool = True
+    use_bimamba_decoder: bool = False
+
+    # Bi-Mamba+ inspired decoder-level forget gate.
+    # Used only when use_bimamba_decoder=True.
+    use_bimamba_forget_gate: bool = False
+    bimamba_forget_gate_init: float = 0.5
+    bimamba_local_kernel_size: int = 3
+    bimamba_gate_scalar: bool = True
+
     mamba_d_state: int = 16
     mamba_d_conv: int = 4
     mamba_expand: int = 2
+
+    # BiMamba decoder options
+    bimamba_action_only_flip: bool = False
+
+    use_bimamba_residual_gate: bool = False
+    bimamba_residual_gate_scalar: bool = True
+    bimamba_residual_gate_init: float = 0.5
+    bimamba_residual_gamma_init: float = 1e-4
+
+    use_pre_cross_attention: bool = False
+    pre_cross_attention_gamma_init: float = 1e-4
 
     # Configuration for temporal weighting
     use_temporal_weighting: bool = False
@@ -134,6 +154,75 @@ class ACMConfig(PreTrainedConfig):
     use_vae: bool = True
     latent_dim: int = 32
     n_vae_encoder_layers: int = 4
+
+    # Action-space Conv refiner
+    use_action_conv_refiner: bool = False
+    action_refiner_hidden_dim: int = 128
+    action_refiner_kernel_size: int = 7
+    action_refiner_expansion: int = 2
+    action_refiner_alpha_init: float = 0.1 
+    delta_magnitude_weight: float = 0.0
+    delta_smoothness_weight: float = 0.0
+    action_jerk_weight: float = 0.0
+    action_jerk_front_steps: int = 0
+
+    # Absolute action acceleration loss
+    # action_accel_front_steps = 0 means full chunk.
+    # action_accel_front_steps = 30 means only first 30 action steps.
+    action_accel_weight: float = 0.0
+    action_accel_front_steps: int = 0
+
+    # Legacy feature-space refinement head config
+    # Kept only for loading old checkpoints.
+    use_refinement: bool = False
+    refinement_kernel_size: int = 3
+    refinement_expansion: int = 2
+    refinement_n_blocks: int = 1
+    refinement_layer_scale_init: float = 1e-6
+    # ------------------------------------------------------------------
+    # Legacy refiner config fields.
+    # Kept only for loading old checkpoints/configs.
+    # Current action-space refiner uses:
+    #   use_action_conv_refiner
+    #   action_refiner_hidden_dim
+    #   action_refiner_kernel_size
+    #   action_refiner_expansion
+    #   action_refiner_alpha_init
+    # ------------------------------------------------------------------
+    use_action_refiner: bool = False
+    refiner_d_model: int = 128
+    refiner_n_layers: int = 2
+    refiner_d_state: int = 16
+    refiner_d_conv: int = 4
+    refiner_expand: int = 2
+    refiner_alpha_init: float = 0.1
+
+    # Action-token self-attention after Mamba decoder
+    use_action_self_attention: bool = False
+    action_self_attention_use_gate: bool = False
+    action_self_attention_gamma_init: float = 1e-4
+
+    # Dense MoE-style decoder fusion
+    use_moe_decoder_fusion: bool = False
+    # Gate is initialized to prefer Transformer/ACT branch.
+    # 0.8 means initial gate ≈ 80% ACT decoder, 20% Mamba decoder.
+    moe_gate_init: float = 0.8
+    moe_gate_hidden_dim: int = 128
+
+    # MoE auxiliary losses
+    moe_branch_l1_weight: float = 0.5
+    moe_gate_prior_weight: float = 0.01
+    moe_gate_prior_target: float = 0.8
+
+    # Bi-Mamba+ inspired complementary local/global mixing inside action self-attention.
+    action_self_attention_use_forget_gate: bool = False
+    # gate = sigmoid(logit). gate means how much to use global self-attention path.
+    # 0.5 = local/global half, 0.7 = global-favored.
+    action_self_attention_forget_gate_init: float = 0.5
+    # local temporal candidate path.
+    action_self_attention_local_kernel_size: int = 3
+    # True: gate shape [B,T,1], False: gate shape [B,T,D].
+    action_self_attention_gate_scalar: bool = True
 
     # Inference.
     # Note: the value used in ACT when temporal ensembling is enabled is 0.01.
