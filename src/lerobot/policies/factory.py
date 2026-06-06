@@ -338,6 +338,15 @@ def make_pre_post_processors(
             dataset_stats=kwargs.get("dataset_stats"),
         )
 
+    # ACT family — subclass before parent
+    elif isinstance(policy_cfg, ACTICPEConfig):
+        from lerobot.policies.act_icpe.processor_act_icpe import make_act_icpe_pre_post_processors
+
+        processors = make_act_icpe_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
     elif isinstance(policy_cfg, ACTConfig):
         from lerobot.policies.act.processor_act import make_act_pre_post_processors
 
@@ -358,6 +367,33 @@ def make_pre_post_processors(
         from lerobot.policies.acm2.processor_acm2 import make_acm2_pre_post_processors
 
         processors = make_acm2_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    # ACM3 family — most-derived subclass first, base last
+    elif isinstance(policy_cfg, ACM3ICPETSSCPConfig):
+        from lerobot.policies.acm3_icpe_tsscp.processor_acm3_icpe_tsscp import (
+            make_acm3_icpe_tsscp_pre_post_processors,
+        )
+
+        processors = make_acm3_icpe_tsscp_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACM3ICPEConfig):
+        from lerobot.policies.acm3_icpe.processor_acm3_icpe import make_acm3_icpe_pre_post_processors
+
+        processors = make_acm3_icpe_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACM3SSCPConfig):
+        from lerobot.policies.acm3_sscp.processor_acm3_sscp import make_acm3_sscp_pre_post_processors
+
+        processors = make_acm3_sscp_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

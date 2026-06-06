@@ -61,6 +61,9 @@ class TrainPipelineConfig(HubMixin):
     save_checkpoint: bool = True
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 20_000
+    # Set to True to wrap the dataset with ChunkPairDataset for SSCP chunk-continuation training.
+    # Requires policy.chunk_size to be set and the policy to handle "action_n1" keys in forward().
+    use_chunk_pairs: bool = False
     use_policy_training_preset: bool = True
     optimizer: OptimizerConfig | None = None
     scheduler: LRSchedulerConfig | None = None
