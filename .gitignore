@@ -184,3 +184,6 @@ outputs/eval/**/videos/
 *.mov
 
 outputs/
+
+# Experiment notebooks (local only)
+v6/
