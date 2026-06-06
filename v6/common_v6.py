@@ -14,8 +14,9 @@ from pathlib import Path
 from typing import Any
 
 # ── Project paths ─────────────────────────────────────────────────────────────
+# common_v6.py is at <repo_root>/v6/common_v6.py, so parent.parent = repo root.
 
-PROJECT_ROOT = Path.home() / "lerobot_project" / "lerobot-ac-mlp"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_BASE = PROJECT_ROOT / "outputs" / "v6_seed0"
 SRC_DIR = PROJECT_ROOT / "src"
 
