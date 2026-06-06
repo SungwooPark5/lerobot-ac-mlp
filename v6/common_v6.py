@@ -169,36 +169,70 @@ def launch_training(tags: list[str], gpu_offset: int = 0) -> dict[str, subproces
 # ── Training status ────────────────────────────────────────────────────────────
 
 def get_training_status(tag: str) -> dict[str, Any]:
-    """Parse train.log to extract current step and best eval SR."""
+    """Extract current step and best eval SR from training_log.jsonl (primary) or train.log (fallback)."""
     out_dir = get_output_dir(tag)
+    jsonl_file = out_dir / "training_log.jsonl"
     log_file = out_dir / "train.log"
     status: dict[str, Any] = {
         "tag": tag,
         "step": 0,
         "best_sr": None,
         "done": False,
-        "log_exists": log_file.exists(),
+        "log_exists": log_file.exists() or jsonl_file.exists(),
     }
-    if not log_file.exists():
+
+    # Primary: read structured JSONL (written every log_freq steps)
+    if jsonl_file.exists():
+        last_step = 0
+        best_sr = None
+        with open(jsonl_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                s = rec.get("step", 0)
+                if s > last_step:
+                    last_step = s
+                # training_log records eval metrics via output_dict when present
+                for key in ("pc_success", "eval/pc_success"):
+                    if key in rec:
+                        sr_val = rec[key] / 100.0  # pc_success is 0-100
+                        if best_sr is None or sr_val > best_sr:
+                            best_sr = sr_val
+        status["step"] = last_step
+        status["best_sr"] = best_sr
+        status["done"] = last_step >= STEPS
         return status
 
+    # Fallback: scan train.log for plain-text metrics
+    if not log_file.exists():
+        return status
     last_step = 0
     best_sr = None
     with open(log_file) as f:
         for line in f:
-            if "step:" in line or "global_step" in line:
+            # step number: look for "step:NNNNN" pattern in MetricsTracker output
+            if "step:" in line:
                 for tok in line.split():
+                    tok = tok.rstrip(",")
                     if tok.isdigit():
                         s = int(tok)
                         if s > last_step:
                             last_step = s
-            if "eval/avg_sum_rewards" in line or "success_rate" in line:
+            if "pc_success" in line or "success" in line.lower():
                 for tok in line.split():
+                    tok = tok.rstrip("%,")
                     try:
                         v = float(tok)
-                        if 0 <= v <= 1:
-                            if best_sr is None or v > best_sr:
-                                best_sr = v
+                        # pc_success is 0-100; normalise to 0-1
+                        if 0 < v <= 100:
+                            sr_val = v / 100.0 if v > 1 else v
+                            if best_sr is None or sr_val > best_sr:
+                                best_sr = sr_val
                     except ValueError:
                         pass
     status["step"] = last_step
@@ -237,10 +271,9 @@ def make_eval_cmd(tag: str, gpu_id: int, n_episodes: int | None = None,
     n = n_episodes or EVAL_N_EPISODES
     out_dir = get_output_dir(tag) / "eval"
     out_dir.mkdir(parents=True, exist_ok=True)
-    policy_type = MODEL_CONFIGS[tag][0]
     parts = [
         f"CUDA_VISIBLE_DEVICES={gpu_id}",
-        "python -m lerobot.scripts.eval",
+        "python -m lerobot.scripts.lerobot_eval",
         f"--policy.path={ckpt}",
         f"--env.type={ENV_TYPE}",
         f"--env.task={ENV_TASK}",
@@ -278,38 +311,56 @@ def launch_eval(jobs: list[tuple[str, int, int | None]], gpu_offset: int = 0) ->
 # ── Eval status ───────────────────────────────────────────────────────────────
 
 def get_eval_status(tag: str) -> dict[str, Any]:
-    """Parse eval output directory for results."""
+    """Check eval status — reads eval_info.json if complete, otherwise scans eval.log."""
     eval_dir = get_output_dir(tag) / "eval"
-    log_file = eval_dir / "eval.log"
+    info_file = eval_dir / "eval_info.json"
+    log_file  = eval_dir / "eval.log"
     status: dict[str, Any] = {
         "tag": tag,
         "sr": None,
         "n_done": 0,
         "done": False,
-        "log_exists": log_file.exists(),
+        "log_exists": log_file.exists() or info_file.exists(),
     }
-    if not log_file.exists():
+
+    # If eval_info.json exists, eval is done — read it directly
+    if info_file.exists():
+        with open(info_file) as f:
+            info = json.load(f)
+        overall = info.get("overall", {})
+        pc = overall.get("pc_success")
+        n  = overall.get("n_episodes", EVAL_N_EPISODES)
+        status["sr"]     = pc / 100.0 if pc is not None else None
+        status["n_done"] = n
+        status["done"]   = True
         return status
 
+    # Otherwise scan the running log for progress
+    if not log_file.exists():
+        return status
     n_done = 0
     sr = None
     with open(log_file) as f:
         for line in f:
-            if "success" in line.lower():
+            # trange postfix: "running_success_rate: 72.0%"
+            if "running_success_rate" in line:
                 for tok in line.split():
+                    tok = tok.rstrip("%")
                     try:
                         v = float(tok)
-                        if 0 <= v <= 1:
-                            sr = v
+                        if 0 < v <= 100:
+                            sr = v / 100.0
                     except ValueError:
                         pass
-            if "episode" in line.lower():
+            # episode count: "Stepping through eval batches:  5/10"
+            if "eval batches" in line or "episode" in line.lower():
                 for tok in line.split():
+                    tok = tok.split("/")[0].strip()
                     if tok.isdigit():
                         n_done = max(n_done, int(tok))
-    status["sr"] = sr
+    status["sr"]     = sr
     status["n_done"] = n_done
-    status["done"] = n_done >= EVAL_N_EPISODES
+    status["done"]   = n_done >= EVAL_N_EPISODES
     return status
 
 
@@ -386,7 +437,20 @@ def load_all_metrics(tags: list[str]) -> dict[str, dict[str, Any]]:
 
 
 def build_metrics_from_eval_info(tag: str, eval_info_path: str | Path | None = None) -> dict[str, Any]:
-    """Build a metrics dict from an eval output JSON if available."""
+    """Build a metrics dict from an eval_info.json produced by lerobot_eval.
+
+    eval_info.json structure (from eval_policy_all):
+    {
+      "per_task": [...],
+      "per_group": {...},
+      "overall": {
+        "avg_sum_reward": 0.72,
+        "pc_success": 72.0,   # 0-100
+        "n_episodes": 500,
+        ...
+      }
+    }
+    """
     if eval_info_path is None:
         eval_info_path = get_output_dir(tag) / "eval" / "eval_info.json"
     path = Path(eval_info_path)
@@ -394,13 +458,18 @@ def build_metrics_from_eval_info(tag: str, eval_info_path: str | Path | None = N
         return {}
     with open(path) as f:
         info = json.load(f)
-    n = info.get("n_episodes", EVAL_N_EPISODES)
-    k = int(round(info.get("avg_sum_rewards", 0) * n))
+    overall = info.get("overall", info)          # fallback: old flat format
+    n  = overall.get("n_episodes", EVAL_N_EPISODES)
+    pc = overall.get("pc_success")               # 0-100
+    sr = (pc / 100.0) if pc is not None else overall.get("avg_sum_reward")
+    if sr is None:
+        return {}
+    k = int(round(sr * n))
     lo, hi = wilson_ci(k, n)
     return {
         "tag": tag,
         "label": MODEL_LABELS.get(tag, tag),
-        "sr": info.get("avg_sum_rewards"),
+        "sr": sr,
         "sr_ci_lo": lo,
         "sr_ci_hi": hi,
         "n_episodes": n,
