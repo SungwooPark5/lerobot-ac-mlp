@@ -111,7 +111,11 @@ class ChunkPairDataset(Dataset):
 
         # ── Action ────────────────────────────────────────────────────────────
         result["action_n1"] = self._normalize(chunk_n1["action"], "action")
-        result["action_is_pad_n1"] = chunk_n1["action_is_pad"]
+        result["action_is_pad_n1"] = (
+            chunk_n1["action_is_pad"]
+            if "action_is_pad" in chunk_n1
+            else torch.zeros(self.chunk_size, dtype=torch.bool)
+        )
 
         # ── Observations (state-based) ────────────────────────────────────────
         # Policy _forward_chunk_pair expects keys "obs_env_state_n1" and "obs_state_n1"
