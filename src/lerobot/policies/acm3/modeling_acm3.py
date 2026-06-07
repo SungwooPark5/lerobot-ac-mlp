@@ -341,9 +341,14 @@ class ACM3(nn.Module):
             latent_sample = mu + log_sigma_x2.div(2).exp() * torch.randn_like(mu)
         else:
             mu = log_sigma_x2 = None
-            latent_sample = torch.zeros([batch_size, self.config.latent_dim], dtype=torch.float32).to(
-                batch[OBS_STATE].device
-            )
+            if OBS_ENV_STATE in batch:
+                _ref = batch[OBS_ENV_STATE]
+            elif OBS_STATE in batch:
+                _ref = batch[OBS_STATE]
+            else:
+                _ref = next(v for v in batch.values() if v is not None and hasattr(v, "device"))
+            latent_sample = torch.zeros([batch_size, self.config.latent_dim], dtype=torch.float32,
+                                        device=_ref.device)
 
         # Prepare transformer encoder inputs.
         encoder_in_tokens = [self.encoder_latent_input_proj(latent_sample)]

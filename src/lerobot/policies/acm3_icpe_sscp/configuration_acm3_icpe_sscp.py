@@ -27,10 +27,10 @@ from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.acm3_icpe.configuration_acm3_icpe import ACM3ICPEConfig
 
 
-@PreTrainedConfig.register_subclass("acm3_icpe_tsscp")
+@PreTrainedConfig.register_subclass("acm3_icpe_sscp")
 @dataclass
-class ACM3ICPETSSCPConfig(ACM3ICPEConfig):
-    """ACM3 + ICPE + True SSM State Carryover Protocol."""
+class ACM3ICPESSCPConfig(ACM3ICPEConfig):
+    """ACM3 + ICPE + SSM State Carryover Protocol."""
 
     # Inference carry
     sscp_enabled: bool = True   # if False, behaves identically to ACM3ICPE

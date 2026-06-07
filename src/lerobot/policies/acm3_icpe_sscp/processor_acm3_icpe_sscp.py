@@ -2,7 +2,7 @@ from typing import Any
 
 import torch
 
-from lerobot.policies.acm3_icpe_tsscp.configuration_acm3_icpe_tsscp import ACM3ICPETSSCPConfig
+from lerobot.policies.acm3_icpe_sscp.configuration_acm3_icpe_sscp import ACM3ICPESSCPConfig
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     DeviceProcessorStep,
@@ -16,8 +16,8 @@ from lerobot.processor.converters import policy_action_to_transition, transition
 from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
 
 
-def make_acm3_icpe_tsscp_pre_post_processors(
-    config: ACM3ICPETSSCPConfig,
+def make_acm3_icpe_sscp_pre_post_processors(
+    config: ACM3ICPESSCPConfig,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
 ) -> tuple[
     PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],

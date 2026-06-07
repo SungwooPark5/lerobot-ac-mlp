@@ -32,11 +32,11 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from lerobot.policies.acm3_icpe.modeling_acm3_icpe import ACM3ICPE, ACM3ICPEPolicy
-from lerobot.policies.acm3_icpe_tsscp.configuration_acm3_icpe_tsscp import ACM3ICPETSSCPConfig
+from lerobot.policies.acm3_icpe_sscp.configuration_acm3_icpe_sscp import ACM3ICPESSCPConfig
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
 
-class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
+class ACM3ICPESSCPPolicy(ACM3ICPEPolicy):
     """ACM3 + ICPE + SSCP.
 
     Extends ACM3ICPEPolicy with:
@@ -45,10 +45,10 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
                    to handle non-zero initial SSM context.
     """
 
-    config_class = ACM3ICPETSSCPConfig
-    name = "acm3_icpe_tsscp"
+    config_class = ACM3ICPESSCPConfig
+    name = "acm3_icpe_sscp"
 
-    def __init__(self, config: ACM3ICPETSSCPConfig):
+    def __init__(self, config: ACM3ICPESSCPConfig):
         super().__init__(config)
         self.config = config
         # Carry state: (B, 1, D) or None — updated after each chunk at inference
@@ -76,6 +76,11 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
             self._action_queue.extend(actions.transpose(0, 1))
         return self._action_queue.popleft()
 
+    @torch.no_grad()
+    def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
+        self.eval()
+        return self._predict_with_carry(batch)
+
     def _predict_with_carry(self, batch: dict[str, Tensor]) -> Tensor:
         """Run model forward with the stored carry and update carry for next chunk."""
         if self.config.image_features:
@@ -84,48 +89,12 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
 
         carry = self._carry if self.config.sscp_enabled else None
 
-        actions, _ = self.model(batch, carry=carry)
+        actions, _, decoder_out = self.model(batch, carry=carry, return_decoder_out=True)
 
-        # Update carry: extract last decoder output token
-        # model.forward returns (B, K, action_dim) via action_head.
-        # We need the decoder's LAST OUTPUT BEFORE the action head.
-        # We call model._encode + decoder directly to get decoder_out.
         if self.config.sscp_enabled:
-            self._carry = self._extract_carry(batch)
+            self._carry = decoder_out[-1:, :, :].transpose(0, 1).detach()  # (B, 1, D)
 
         return actions
-
-    @torch.no_grad()
-    def _extract_carry(self, batch: dict[str, Tensor]) -> Tensor:
-        """Extract the terminal decoder output token from the current chunk.
-
-        This is the (B, 1, D) vector that summarises what the SSM "learned"
-        during chunk n, to be used as context for chunk n+1.
-        """
-        import torch
-        batch_size = (
-            batch[OBS_IMAGES][0].shape[0] if OBS_IMAGES in batch else batch[OBS_ENV_STATE].shape[0]
-        )
-        carry = self._carry if self.config.sscp_enabled else None
-
-        # Forward through encoder + decoder to get pre-head decoder_out
-        encoder_out, _, _ = self.model._encode(batch, batch_size)
-
-        import math
-        from lerobot.policies.acm3_icpe.modeling_acm3_icpe import make_icpe_signal
-
-        K     = self.config.chunk_size
-        dtype = encoder_out.dtype
-        device = encoder_out.device
-
-        pos_emb  = self.model.decoder_pos_embed.weight.unsqueeze(1)
-        phase    = make_icpe_signal(K, self.config.icpe_mode, device, dtype)
-        icpe_emb = self.model.icpe_proj(phase).unsqueeze(1)
-        decoder_in = (pos_emb + icpe_emb).expand(K, batch_size, self.config.dim_model)
-
-        decoder_out = self.model.decoder(decoder_in, encoder_out, carry=carry)
-        # decoder_out: (K, B, D). Take last token → (B, 1, D)
-        return decoder_out[-1:, :, :].transpose(0, 1).detach()  # (B, 1, D)
 
     # ── Training ───────────────────────────────────────────────────────────────
 
@@ -153,9 +122,14 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
         self,
         batch: dict[str, Tensor],
         carry: Tensor | None,
-    ) -> tuple[Tensor, dict]:
+        return_decoder_out: bool = False,
+    ) -> tuple:
         """Standard forward on a single chunk with optional carry."""
-        actions_hat, (mu, log_sigma_x2) = self.model(batch, carry=carry)
+        if return_decoder_out:
+            actions_hat, (mu, log_sigma_x2), decoder_out = self.model(batch, carry=carry, return_decoder_out=True)
+        else:
+            actions_hat, (mu, log_sigma_x2) = self.model(batch, carry=carry)
+            decoder_out = None
 
         K      = actions_hat.shape[1]
         n_exec = self.config.n_action_steps
@@ -177,8 +151,12 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
         if self.config.use_vae:
             kld = (-0.5 * (1 + log_sigma_x2 - mu.pow(2) - log_sigma_x2.exp())).sum(-1).mean()
             loss_dict["kld_loss"] = kld.item()
-            return l1 + kld * self.config.kl_weight, loss_dict
-        return l1, loss_dict
+            loss = l1 + kld * self.config.kl_weight
+        else:
+            loss = l1
+        if return_decoder_out:
+            return loss, loss_dict, decoder_out
+        return loss, loss_dict
 
     def _forward_chunk_pair(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
         """Chunk-continuation training forward.
@@ -189,49 +167,28 @@ class ACM3ICPETSSCPPolicy(ACM3ICPEPolicy):
         4. Process chunk n+1 with carry=carry_n.
         5. Return combined loss.
         """
-        import math
-        from lerobot.policies.acm3_icpe.modeling_acm3_icpe import make_icpe_signal
-
         # ── Chunk n ───────────────────────────────────────────────────────────
         batch_n = {k: v for k, v in batch.items() if not k.endswith("_n1")}
-        loss_n, loss_dict_n = self._forward_single(batch_n, carry=None)
+        loss_n, loss_dict_n, dec_out_n = self._forward_single(batch_n, carry=None, return_decoder_out=True)
 
         # ── Extract carry from chunk n ────────────────────────────────────────
-        # We need decoder_out (K, B, D) before action_head.
-        # Re-run encoder + decoder on batch_n.
-        batch_size = (
-            batch_n[OBS_IMAGES][0].shape[0] if OBS_IMAGES in batch_n
-            else batch_n[OBS_ENV_STATE].shape[0]
-        )
-        encoder_out_n, _, _ = self.model._encode(batch_n, batch_size)
-
-        K      = self.config.chunk_size
-        dtype  = encoder_out_n.dtype
-        device = encoder_out_n.device
-        pos_emb  = self.model.decoder_pos_embed.weight.unsqueeze(1)
-        phase    = make_icpe_signal(K, self.config.icpe_mode, device, dtype)
-        icpe_emb = self.model.icpe_proj(phase).unsqueeze(1)
-        dec_in_n = (pos_emb + icpe_emb).expand(K, batch_size, self.config.dim_model)
-        dec_out_n = self.model.decoder(dec_in_n, encoder_out_n, carry=None)  # (K, B, D)
-
-        # Last token of decoder output = carry for next chunk
         carry = dec_out_n[-1:, :, :].transpose(0, 1)  # (B, 1, D)
         if self.config.sscp_detach:
             carry = carry.detach()
 
         # ── Chunk n+1 ─────────────────────────────────────────────────────────
-        batch_n1 = {
-            OBS_STATE:          batch.get("obs_state_n1",      batch.get(OBS_STATE)),
-            OBS_ENV_STATE:      batch.get("obs_env_state_n1",  batch.get(OBS_ENV_STATE)),
-            ACTION:             batch["action_n1"],
-            "action_is_pad":    batch["action_is_pad_n1"],
+        _n1_candidates = {
+            OBS_STATE:       batch.get("obs_state_n1",     batch.get(OBS_STATE)),
+            OBS_ENV_STATE:   batch.get("obs_env_state_n1", batch.get(OBS_ENV_STATE)),
+            ACTION:          batch["action_n1"],
+            "action_is_pad": batch["action_is_pad_n1"],
         }
+        batch_n1 = {k: v for k, v in _n1_candidates.items() if v is not None}
         if OBS_IMAGES in batch:
-            # Assume image keys suffixed _n1 follow same ordering
             batch_n1[OBS_IMAGES] = [
                 batch[k + "_n1"] for k in self.config.image_features
                 if k + "_n1" in batch
-            ] or batch[OBS_IMAGES]  # fallback to chunk n images if not provided
+            ] or batch[OBS_IMAGES]
 
         loss_n1, loss_dict_n1 = self._forward_single(batch_n1, carry=carry)
 

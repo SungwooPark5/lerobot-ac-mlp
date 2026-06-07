@@ -35,7 +35,7 @@ from lerobot.policies.acm.configuration_acm import ACMConfig
 from lerobot.policies.acm2.configuration_acm2 import ACM2Config
 from lerobot.policies.acm3.configuration_acm3 import ACM3Config
 from lerobot.policies.acm3_icpe.configuration_acm3_icpe import ACM3ICPEConfig
-from lerobot.policies.acm3_icpe_tsscp.configuration_acm3_icpe_tsscp import ACM3ICPETSSCPConfig
+from lerobot.policies.acm3_icpe_sscp.configuration_acm3_icpe_sscp import ACM3ICPESSCPConfig
 from lerobot.policies.acm3_sscp.configuration_acm3_sscp import ACM3SSCPConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.groot.configuration_groot import GrootConfig
@@ -109,10 +109,10 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
 
         return ACM3ICPEPolicy
 
-    elif name == "acm3_icpe_tsscp":
-        from lerobot.policies.acm3_icpe_tsscp.modeling_acm3_icpe_tsscp import ACM3ICPETSSCPPolicy
+    elif name == "acm3_icpe_sscp":
+        from lerobot.policies.acm3_icpe_sscp.modeling_acm3_icpe_sscp import ACM3ICPESSCPPolicy
 
-        return ACM3ICPETSSCPPolicy
+        return ACM3ICPESSCPPolicy
 
     elif name == "acm3_sscp":
         from lerobot.policies.acm3_sscp.modeling_acm3_sscp import ACM3SSCPPolicy
@@ -196,8 +196,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACM3Config(**kwargs)
     elif policy_type == "acm3_icpe":
         return ACM3ICPEConfig(**kwargs)
-    elif policy_type == "acm3_icpe_tsscp":
-        return ACM3ICPETSSCPConfig(**kwargs)
+    elif policy_type == "acm3_icpe_sscp":
+        return ACM3ICPESSCPConfig(**kwargs)
     elif policy_type == "acm3_sscp":
         return ACM3SSCPConfig(**kwargs)
     elif policy_type == "act_icpe":
@@ -372,12 +372,12 @@ def make_pre_post_processors(
         )
 
     # ACM3 family — most-derived subclass first, base last
-    elif isinstance(policy_cfg, ACM3ICPETSSCPConfig):
-        from lerobot.policies.acm3_icpe_tsscp.processor_acm3_icpe_tsscp import (
-            make_acm3_icpe_tsscp_pre_post_processors,
+    elif isinstance(policy_cfg, ACM3ICPESSCPConfig):
+        from lerobot.policies.acm3_icpe_sscp.processor_acm3_icpe_sscp import (
+            make_acm3_icpe_sscp_pre_post_processors,
         )
 
-        processors = make_acm3_icpe_tsscp_pre_post_processors(
+        processors = make_acm3_icpe_sscp_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

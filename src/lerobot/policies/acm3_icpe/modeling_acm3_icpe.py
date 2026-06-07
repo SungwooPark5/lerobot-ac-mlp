@@ -282,13 +282,15 @@ class ACM3ICPE(nn.Module):
         self,
         batch: dict[str, Tensor],
         carry: Tensor | None = None,
-    ) -> tuple[Tensor, tuple[Tensor | None, Tensor | None]]:
+        return_decoder_out: bool = False,
+    ) -> tuple:
         """
         Args:
             batch: observation dict.
             carry: (B, 1, D) carry token from previous chunk (for SSCP).
+            return_decoder_out: if True, also return decoder_out (K, B, D) before action_head.
         Returns:
-            actions (B, K, action_dim), (mu, log_sigma_x2).
+            actions (B, K, action_dim), (mu, log_sigma_x2)[, decoder_out (K, B, D)].
         """
         if self.config.use_vae and self.training:
             assert ACTION in batch, "Need action labels for VAE training."
@@ -320,6 +322,8 @@ class ACM3ICPE(nn.Module):
         )  # (K, B, D)
 
         actions = self.action_head(decoder_out.transpose(0, 1))  # (B, K, action_dim)
+        if return_decoder_out:
+            return actions, (mu, log_sigma_x2), decoder_out
         return actions, (mu, log_sigma_x2)
 
 

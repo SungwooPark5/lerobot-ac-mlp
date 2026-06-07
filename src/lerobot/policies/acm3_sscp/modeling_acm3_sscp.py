@@ -27,7 +27,7 @@ Training strategy (Chunk-Continuation):
 No ICPE:
   This policy has no Intra-Chunk Phase Embedding. Decoder queries use only the
   learned positional embedding (no phase signal injection). Compare with
-  acm3_icpe_tsscp which adds both ICPE and SSCP.
+  acm3_icpe_sscp which adds both ICPE and SSCP.
 """
 
 from collections import deque
@@ -259,7 +259,8 @@ class ACM3SSCP(nn.Module):
         self,
         batch: dict[str, Tensor],
         carry: Tensor | None = None,
-    ) -> tuple[Tensor, tuple[Tensor | None, Tensor | None]]:
+        return_decoder_out: bool = False,
+    ) -> tuple:
         if self.config.use_vae and self.training:
             assert ACTION in batch, "Need action labels for VAE training."
 
@@ -281,6 +282,8 @@ class ACM3SSCP(nn.Module):
         )  # (K, B, D)
 
         actions = self.action_head(decoder_out.transpose(0, 1))  # (B, K, action_dim)
+        if return_decoder_out:
+            return actions, (mu, log_sigma_x2), decoder_out
         return actions, (mu, log_sigma_x2)
 
 
@@ -336,41 +339,23 @@ class ACM3SSCPPolicy(PreTrainedPolicy):
             self._action_queue.extend(actions.transpose(0, 1))
         return self._action_queue.popleft()
 
+    @torch.no_grad()
+    def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
+        self.eval()
+        return self._predict_with_carry(batch)
+
     def _predict_with_carry(self, batch: dict[str, Tensor]) -> Tensor:
         if self.config.image_features:
             batch = dict(batch)
             batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features]
 
         carry = self._carry if self.config.sscp_enabled else None
-        actions, _ = self.model(batch, carry=carry)
+        actions, _, decoder_out = self.model(batch, carry=carry, return_decoder_out=True)
 
         if self.config.sscp_enabled:
-            self._carry = self._extract_carry(batch)
+            self._carry = decoder_out[-1:, :, :].transpose(0, 1).detach()  # (B, 1, D)
 
         return actions
-
-    @torch.no_grad()
-    def _extract_carry(self, batch: dict[str, Tensor]) -> Tensor:
-        """Extract (B, 1, D) terminal decoder output for next chunk's carry."""
-        batch_size = (
-            batch[OBS_IMAGES][0].shape[0] if OBS_IMAGES in batch
-            else batch[OBS_ENV_STATE].shape[0]
-        )
-        carry = self._carry if self.config.sscp_enabled else None
-
-        encoder_out, _, _ = self.model._encode(batch, batch_size)
-
-        K      = self.config.chunk_size
-        dec_in = self.model.decoder_pos_embed.weight.unsqueeze(1)  # (K, 1, D)
-
-        decoder_out = self.model.decoder(
-            dec_in.expand(K, batch_size, self.config.dim_model),
-            encoder_out,
-            carry=carry,
-        )  # (K, B, D)
-
-        # Last token → (B, 1, D)
-        return decoder_out[-1:, :, :].transpose(0, 1).detach()
 
     # ── Training ───────────────────────────────────────────────────────────────
 
@@ -390,8 +375,13 @@ class ACM3SSCPPolicy(PreTrainedPolicy):
         self,
         batch: dict[str, Tensor],
         carry: Tensor | None,
-    ) -> tuple[Tensor, dict]:
-        actions_hat, (mu, log_sigma_x2) = self.model(batch, carry=carry)
+        return_decoder_out: bool = False,
+    ) -> tuple:
+        if return_decoder_out:
+            actions_hat, (mu, log_sigma_x2), decoder_out = self.model(batch, carry=carry, return_decoder_out=True)
+        else:
+            actions_hat, (mu, log_sigma_x2) = self.model(batch, carry=carry)
+            decoder_out = None
 
         K      = actions_hat.shape[1]
         n_exec = self.config.n_action_steps
@@ -413,41 +403,32 @@ class ACM3SSCPPolicy(PreTrainedPolicy):
         if self.config.use_vae:
             kld = (-0.5 * (1 + log_sigma_x2 - mu.pow(2) - log_sigma_x2.exp())).sum(-1).mean()
             loss_dict["kld_loss"] = kld.item()
-            return l1 + kld * self.config.kl_weight, loss_dict
-        return l1, loss_dict
+            loss = l1 + kld * self.config.kl_weight
+        else:
+            loss = l1
+        if return_decoder_out:
+            return loss, loss_dict, decoder_out
+        return loss, loss_dict
 
     def _forward_chunk_pair(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
         """Chunk-continuation training: chunk n → extract carry → chunk n+1."""
         # ── Chunk n ───────────────────────────────────────────────────────────
         batch_n = {k: v for k, v in batch.items() if not k.endswith("_n1")}
-        loss_n, loss_dict_n = self._forward_single(batch_n, carry=None)
+        loss_n, loss_dict_n, dec_out_n = self._forward_single(batch_n, carry=None, return_decoder_out=True)
 
         # ── Extract carry from chunk n's decoder output ───────────────────────
-        batch_size = (
-            batch_n[OBS_IMAGES][0].shape[0] if OBS_IMAGES in batch_n
-            else batch_n[OBS_ENV_STATE].shape[0]
-        )
-        encoder_out_n, _, _ = self.model._encode(batch_n, batch_size)
-
-        K      = self.config.chunk_size
-        dec_in = self.model.decoder_pos_embed.weight.unsqueeze(1)
-        dec_out_n = self.model.decoder(
-            dec_in.expand(K, batch_size, self.config.dim_model),
-            encoder_out_n,
-            carry=None,
-        )  # (K, B, D)
-
         carry = dec_out_n[-1:, :, :].transpose(0, 1)  # (B, 1, D)
         if self.config.sscp_detach:
             carry = carry.detach()
 
         # ── Chunk n+1 ─────────────────────────────────────────────────────────
-        batch_n1 = {
+        _n1_candidates = {
             OBS_STATE:       batch.get("obs_state_n1",     batch.get(OBS_STATE)),
             OBS_ENV_STATE:   batch.get("obs_env_state_n1", batch.get(OBS_ENV_STATE)),
             ACTION:          batch["action_n1"],
             "action_is_pad": batch["action_is_pad_n1"],
         }
+        batch_n1 = {k: v for k, v in _n1_candidates.items() if v is not None}
         if OBS_IMAGES in batch:
             batch_n1[OBS_IMAGES] = [
                 batch[k + "_n1"] for k in self.config.image_features

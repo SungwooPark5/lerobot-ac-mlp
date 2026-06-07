@@ -83,13 +83,13 @@ class ChunkPairDataset(Dataset):
         if stats is None:
             return tensor
         if "mean" in stats and "std" in stats:
-            mean = stats["mean"]
-            std = stats["std"]
-            return (tensor.float() - mean.float()) / (std.float() + 1e-8)
+            mean = torch.as_tensor(stats["mean"]).float()
+            std = torch.as_tensor(stats["std"]).float()
+            return (tensor.float() - mean) / (std + 1e-8)
         if "min" in stats and "max" in stats:
             # MIN_MAX normalization: scale to [-1, 1]
-            lo = stats["min"].float()
-            hi = stats["max"].float()
+            lo = torch.as_tensor(stats["min"]).float()
+            hi = torch.as_tensor(stats["max"]).float()
             return 2.0 * (tensor.float() - lo) / (hi - lo + 1e-8) - 1.0
         logger.warning(
             f"ChunkPairDataset: unknown stats format for '{feature_key}', "
