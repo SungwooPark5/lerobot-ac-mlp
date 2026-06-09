@@ -36,6 +36,10 @@ from lerobot.policies.acm2.configuration_acm2 import ACM2Config
 from lerobot.policies.acm3.configuration_acm3 import ACM3Config
 from lerobot.policies.acm3_icpe.configuration_acm3_icpe import ACM3ICPEConfig
 from lerobot.policies.acm3_icpe_sscp.configuration_acm3_icpe_sscp import ACM3ICPESSCPConfig
+from lerobot.policies.acm3_icpe_sscp_bimamba.configuration_acm3_icpe_sscp_bimamba import ACM3ICPESSCPBiMambaConfig
+from lerobot.policies.acm3_icpe_sscp_self_atten.configuration_acm3_icpe_sscp_self_atten import ACM3ICPESSCPSelfAttenConfig
+from lerobot.policies.acm3_bimamba.configuration_acm3_bimamba import ACM3BiMambaConfig
+from lerobot.policies.acm3_self_atten.configuration_acm3_self_atten import ACM3SelfAttenConfig
 from lerobot.policies.acm3_sscp.configuration_acm3_sscp import ACM3SSCPConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.groot.configuration_groot import GrootConfig
@@ -113,6 +117,26 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.acm3_icpe_sscp.modeling_acm3_icpe_sscp import ACM3ICPESSCPPolicy
 
         return ACM3ICPESSCPPolicy
+
+    elif name == "acm3_icpe_sscp_bimamba":
+        from lerobot.policies.acm3_icpe_sscp_bimamba.modeling_acm3_icpe_sscp_bimamba import ACM3ICPESSCPBiMambaPolicy
+
+        return ACM3ICPESSCPBiMambaPolicy
+
+    elif name == "acm3_icpe_sscp_self_atten":
+        from lerobot.policies.acm3_icpe_sscp_self_atten.modeling_acm3_icpe_sscp_self_atten import ACM3ICPESSCPSelfAttenPolicy
+
+        return ACM3ICPESSCPSelfAttenPolicy
+
+    elif name == "acm3_bimamba":
+        from lerobot.policies.acm3_bimamba.modeling_acm3_bimamba import ACM3BiMambaPolicy
+
+        return ACM3BiMambaPolicy
+
+    elif name == "acm3_self_atten":
+        from lerobot.policies.acm3_self_atten.modeling_acm3_self_atten import ACM3SelfAttenPolicy
+
+        return ACM3SelfAttenPolicy
 
     elif name == "acm3_sscp":
         from lerobot.policies.acm3_sscp.modeling_acm3_sscp import ACM3SSCPPolicy
@@ -198,6 +222,14 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACM3ICPEConfig(**kwargs)
     elif policy_type == "acm3_icpe_sscp":
         return ACM3ICPESSCPConfig(**kwargs)
+    elif policy_type == "acm3_icpe_sscp_bimamba":
+        return ACM3ICPESSCPBiMambaConfig(**kwargs)
+    elif policy_type == "acm3_icpe_sscp_self_atten":
+        return ACM3ICPESSCPSelfAttenConfig(**kwargs)
+    elif policy_type == "acm3_bimamba":
+        return ACM3BiMambaConfig(**kwargs)
+    elif policy_type == "acm3_self_atten":
+        return ACM3SelfAttenConfig(**kwargs)
     elif policy_type == "acm3_sscp":
         return ACM3SSCPConfig(**kwargs)
     elif policy_type == "act_icpe":
@@ -372,6 +404,26 @@ def make_pre_post_processors(
         )
 
     # ACM3 family — most-derived subclass first, base last
+    elif isinstance(policy_cfg, ACM3ICPESSCPBiMambaConfig):
+        from lerobot.policies.acm3_icpe_sscp_bimamba.processor_acm3_icpe_sscp_bimamba import (
+            make_acm3_icpe_sscp_bimamba_pre_post_processors,
+        )
+
+        processors = make_acm3_icpe_sscp_bimamba_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACM3ICPESSCPSelfAttenConfig):
+        from lerobot.policies.acm3_icpe_sscp_self_atten.processor_acm3_icpe_sscp_self_atten import (
+            make_acm3_icpe_sscp_self_atten_pre_post_processors,
+        )
+
+        processors = make_acm3_icpe_sscp_self_atten_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
     elif isinstance(policy_cfg, ACM3ICPESSCPConfig):
         from lerobot.policies.acm3_icpe_sscp.processor_acm3_icpe_sscp import (
             make_acm3_icpe_sscp_pre_post_processors,
@@ -386,6 +438,26 @@ def make_pre_post_processors(
         from lerobot.policies.acm3_icpe.processor_acm3_icpe import make_acm3_icpe_pre_post_processors
 
         processors = make_acm3_icpe_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACM3BiMambaConfig):
+        from lerobot.policies.acm3_bimamba.processor_acm3_bimamba import (
+            make_acm3_bimamba_pre_post_processors,
+        )
+
+        processors = make_acm3_bimamba_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACM3SelfAttenConfig):
+        from lerobot.policies.acm3_self_atten.processor_acm3_self_atten import (
+            make_acm3_self_atten_pre_post_processors,
+        )
+
+        processors = make_acm3_self_atten_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )
