@@ -49,7 +49,9 @@ class Mamba3BiMambaICPEDecoder(nn.Module):
                 "git+https://github.com/state-spaces/mamba.git --no-build-isolation"
             )
 
-        def _make_layers():
+        # offset keeps forward/backward layer_idx disjoint: fwd uses 0..N-1,
+        # bwd uses N..2N-1 — avoids overlapping Mamba3 internal cache/RoPE state.
+        def _make_layers(offset: int = 0):
             return nn.ModuleList([
                 Mamba3(
                     d_model=config.dim_model,
@@ -62,14 +64,14 @@ class Mamba3BiMambaICPEDecoder(nn.Module):
                     is_mimo=config.mamba3_is_mimo,
                     mimo_rank=config.mamba3_mimo_rank,
                     chunk_size=config.mamba3_chunk_size,
-                    layer_idx=i,
-                    n_layer=config.n_decoder_layers,
+                    layer_idx=i + offset,
+                    n_layer=2 * config.n_decoder_layers,
                 )
                 for i in range(config.n_decoder_layers)
             ])
 
-        self.forward_layers = _make_layers()
-        self.backward_layers = _make_layers()
+        self.forward_layers = _make_layers(0)
+        self.backward_layers = _make_layers(config.n_decoder_layers)
         self.norm = nn.LayerNorm(config.dim_model)
 
     def forward(

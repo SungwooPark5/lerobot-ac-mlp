@@ -39,12 +39,13 @@ class ACM3ICPESelfAtten(ACM3ICPE):
 
     def __init__(self, config: ACM3ICPESSCPSelfAttenConfig):
         super().__init__(config)
-        # Gated self-attention on K action tokens
+        # Gated self-attention on K action tokens (Pre-LN → attn → dropout)
+        self.action_self_attn_norm = nn.LayerNorm(config.dim_model)
         self.action_self_attn = nn.MultiheadAttention(
             config.dim_model, config.self_atten_nhead,
             dropout=config.dropout, batch_first=False,
         )
-        self.action_self_attn_norm = nn.LayerNorm(config.dim_model)
+        self.action_self_attn_dropout = nn.Dropout(config.dropout)
         self.gamma = nn.Parameter(torch.full((1,), config.self_atten_gamma_init))
 
         # Xavier init for the new attention projections
@@ -81,9 +82,12 @@ class ACM3ICPESelfAtten(ACM3ICPE):
             carry=carry,
         )  # (K, B, D)
 
-        # Post-Mamba self-attention on K action tokens
-        attn_out, _ = self.action_self_attn(decoder_out, decoder_out, decoder_out)
-        decoder_out = self.action_self_attn_norm(decoder_out + torch.tanh(self.gamma) * attn_out)
+        # Post-Mamba self-attention: Pre-LN → attn → dropout → tanh-gated residual
+        residual = decoder_out
+        normed = self.action_self_attn_norm(decoder_out)
+        attn_out, _ = self.action_self_attn(normed, normed, normed)
+        attn_out = self.action_self_attn_dropout(attn_out)
+        decoder_out = residual + torch.tanh(self.gamma) * attn_out
 
         actions = self.action_head(decoder_out.transpose(0, 1))
 
