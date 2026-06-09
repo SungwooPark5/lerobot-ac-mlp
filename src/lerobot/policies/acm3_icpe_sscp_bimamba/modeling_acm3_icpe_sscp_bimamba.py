@@ -83,20 +83,24 @@ class Mamba3BiMambaICPEDecoder(nn.Module):
         x = x.transpose(0, 1)           # (B, K, D)
         encoder_out = encoder_out.transpose(0, 1)  # (B, T, D)
 
-        if carry is not None:
-            combined = torch.cat([carry, encoder_out, x], dim=1)  # (B, 1+T+K, D)
-        else:
-            combined = torch.cat([encoder_out, x], dim=1)          # (B, T+K, D)
+        base = torch.cat([encoder_out, x], dim=1)  # (B, T+K, D)
 
-        # Forward direction
-        fwd = combined
+        # Forward direction: carry (if any) warms up the SSM at the start.
+        fwd = torch.cat([carry, base], dim=1) if carry is not None else base
         for layer in self.forward_layers:
             fwd = layer(fwd)
+        if carry is not None:
+            fwd = fwd[:, 1:, :]  # drop carry slot to realign with backward
 
-        # Backward direction: same combined (with carry) flipped
-        bwd = combined.flip(dims=[1])
+        # Backward direction: flip first, THEN prepend carry so the backward SSM
+        # also warms up from carry (flipping the carry-prefixed seq would push
+        # carry to the end and skip warm-up).
+        bwd = base.flip(dims=[1])
+        bwd = torch.cat([carry, bwd], dim=1) if carry is not None else bwd
         for layer in self.backward_layers:
             bwd = layer(bwd)
+        if carry is not None:
+            bwd = bwd[:, 1:, :]  # drop carry slot before flipping back
         bwd = bwd.flip(dims=[1])
 
         # Average — maintains activation scale vs unidirectional baseline
