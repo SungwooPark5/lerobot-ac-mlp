@@ -1,14 +1,23 @@
-"""ACM3 + True SSM State Carryover Protocol (SSCP)
+"""ACM3 + SSM State Carryover Protocol (SSCP)
+
+Terminology note (important for the paper): SSCP does NOT copy Mamba3's literal
+recurrent state tensor across the chunk boundary. Instead it carries a single
+*summary token* (the previous chunk's terminal decoder output) and lets the SSM
+*re-derive* a non-zero hidden state by scanning that token before the queries.
+Describe it as "summary-token state warm-up", not "literal hidden-state transfer".
 
 How SSCP works (inference):
   1. After chunk n, extract the Mamba3 decoder's LAST OUTPUT TOKEN:
        carry_n = decoder_out[:, -1:, :]   # (B, 1, D)
      This dense vector summarises the accumulated SSM context at the end of chunk n.
 
-  2. Before chunk n+1, prepend carry_n to the combined sequence inside Mamba3SSCPDecoder:
-       combined = cat([carry_n, encoder_out_{n+1}, decoder_queries_{n+1}], dim=1)
-     Mamba3 then processes carry_n FIRST, warming up its hidden state h from the
-     previous chunk rather than starting from h=0.
+  2. Before chunk n+1's action queries, insert carry_n into the combined sequence
+     inside Mamba3SSCPDecoder. Default placement is "pre_query":
+       combined = cat([encoder_out_{n+1}, carry_n, decoder_queries_{n+1}], dim=1)
+     so the SSM scans carry_n immediately before the queries — warming up its
+     hidden state from previous-chunk context instead of h=0, without that state
+     being washed out across the long encoder token stream. (The original "prefix"
+     placement cat([carry_n, encoder_out, queries]) is kept as a config ablation.)
 
   3. The K action tokens are still extracted from the LAST K positions of combined_out.
 
@@ -98,6 +107,9 @@ class Mamba3SSCPDecoder(nn.Module):
             for i in range(config.n_decoder_layers)
         ])
         self.norm = nn.LayerNorm(config.dim_model)
+        # "pre_query" places carry right before the queries (recommended); "prefix"
+        # places it before the encoder stream (original, diluted) — see config.
+        self.carry_position = getattr(config, "sscp_carry_position", "pre_query")
 
     def forward(
         self,
@@ -109,7 +121,10 @@ class Mamba3SSCPDecoder(nn.Module):
         encoder_out = encoder_out.transpose(0, 1)  # (B, T, D)
 
         if carry is not None:
-            combined = torch.cat([carry, encoder_out, x], dim=1)  # (B, 1+T+K, D)
+            if self.carry_position == "prefix":
+                combined = torch.cat([carry, encoder_out, x], dim=1)  # (B, 1+T+K, D)
+            else:  # "pre_query": carry adjacent to the action queries
+                combined = torch.cat([encoder_out, carry, x], dim=1)  # (B, T+1+K, D)
         else:
             combined = torch.cat([encoder_out, x], dim=1)         # (B, T+K, D)
 
@@ -290,7 +305,7 @@ class ACM3SSCP(nn.Module):
 # ── Policy wrapper ─────────────────────────────────────────────────────────────
 
 class ACM3SSCPPolicy(PreTrainedPolicy):
-    """ACM3 + True SSM State Carryover Protocol (no ICPE).
+    """ACM3 + SSM State Carryover Protocol (no ICPE).
 
     At inference: carry the terminal decoder output token across chunk boundaries.
     At training:  chunk-continuation pairs teach the model to handle non-zero carry.

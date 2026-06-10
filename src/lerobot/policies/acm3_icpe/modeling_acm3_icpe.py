@@ -110,6 +110,9 @@ class Mamba3ICPEDecoder(nn.Module):
             for i in range(config.n_decoder_layers)
         ])
         self.norm = nn.LayerNorm(config.dim_model)
+        # "pre_query" places carry right before the queries (recommended); "prefix"
+        # places it before the encoder stream (original, diluted) — see config.
+        self.carry_position = getattr(config, "sscp_carry_position", "pre_query")
 
     def forward(
         self,
@@ -121,9 +124,12 @@ class Mamba3ICPEDecoder(nn.Module):
         x = x.transpose(0, 1)           # (B, K, D)
         encoder_out = encoder_out.transpose(0, 1)  # (B, T, D)
 
-        # Prepend carry token if provided
+        # Insert carry token if provided
         if carry is not None:
-            combined = torch.cat([carry, encoder_out, x], dim=1)  # (B, 1+T+K, D)
+            if self.carry_position == "prefix":
+                combined = torch.cat([carry, encoder_out, x], dim=1)  # (B, 1+T+K, D)
+            else:  # "pre_query": carry adjacent to the action queries
+                combined = torch.cat([encoder_out, carry, x], dim=1)  # (B, T+1+K, D)
         else:
             combined = torch.cat([encoder_out, x], dim=1)         # (B, T+K, D)
 

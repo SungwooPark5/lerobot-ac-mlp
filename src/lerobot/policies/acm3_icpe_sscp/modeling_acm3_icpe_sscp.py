@@ -5,10 +5,12 @@ How SSCP works (inference):
        carry_n = decoder_out[:, -1:, :]   # (B, 1, D)
      This dense vector summarises the accumulated SSM context at the end of chunk n.
 
-  2. Before chunk n+1, prepend carry_n to the combined sequence inside Mamba3ICPEDecoder:
-       combined = cat([carry_n, encoder_out_{n+1}, decoder_queries_{n+1}], dim=1)
-     Mamba3 then processes carry_n FIRST, warming up its hidden state h from the
-     previous chunk rather than starting from h=0.
+  2. Before chunk n+1's action queries, insert carry_n into the combined sequence
+     inside Mamba3ICPEDecoder. Default placement is "pre_query":
+       combined = cat([encoder_out_{n+1}, carry_n, decoder_queries_{n+1}], dim=1)
+     Mamba3 scans carry_n immediately before the queries, re-deriving a non-zero
+     hidden state from previous-chunk context instead of h=0. (This is a
+     summary-token warm-up, not a literal transfer of Mamba3's recurrent state.)
 
   3. The K action tokens are still extracted from the LAST K positions of combined_out.
 

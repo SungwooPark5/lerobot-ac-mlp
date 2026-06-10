@@ -73,6 +73,11 @@ class Mamba3BiMambaICPEDecoder(nn.Module):
         self.forward_layers = _make_layers(0)
         self.backward_layers = _make_layers(config.n_decoder_layers)
         self.norm = nn.LayerNorm(config.dim_model)
+        # "pre_query": carry adjacent to the queries in the forward pass (recommended);
+        # "prefix": carry at the very front. In BOTH cases the backward pass places
+        # carry immediately before the (reversed) queries so it warms them up — the
+        # backward SSM processes queries first, so there is no "prefix" alternative.
+        self.carry_position = getattr(config, "sscp_carry_position", "pre_query")
 
     def forward(
         self,
@@ -83,18 +88,28 @@ class Mamba3BiMambaICPEDecoder(nn.Module):
         x = x.transpose(0, 1)           # (B, K, D)
         encoder_out = encoder_out.transpose(0, 1)  # (B, T, D)
 
+        T = encoder_out.shape[1]
         base = torch.cat([encoder_out, x], dim=1)  # (B, T+K, D)
 
-        # Forward direction: carry (if any) warms up the SSM at the start.
-        fwd = torch.cat([carry, base], dim=1) if carry is not None else base
+        # Forward direction.
+        if carry is not None:
+            if self.carry_position == "prefix":
+                fwd = torch.cat([carry, base], dim=1)            # [carry, enc, x]
+            else:  # pre_query: [enc, carry, x]
+                fwd = torch.cat([encoder_out, carry, x], dim=1)
+        else:
+            fwd = base
         for layer in self.forward_layers:
             fwd = layer(fwd)
         if carry is not None:
-            fwd = fwd[:, 1:, :]  # drop carry slot to realign with backward
+            if self.carry_position == "prefix":
+                fwd = fwd[:, 1:, :]                               # drop carry@0
+            else:
+                fwd = torch.cat([fwd[:, :T, :], fwd[:, T + 1:, :]], dim=1)  # drop carry@T
 
-        # Backward direction: flip first, THEN prepend carry so the backward SSM
-        # also warms up from carry (flipping the carry-prefixed seq would push
-        # carry to the end and skip warm-up).
+        # Backward direction: flip base, then prepend carry so the backward SSM
+        # warms up from carry immediately before the (reversed) queries. Flipping a
+        # carry-prefixed sequence would push carry to the end and skip warm-up.
         bwd = base.flip(dims=[1])
         bwd = torch.cat([carry, bwd], dim=1) if carry is not None else bwd
         for layer in self.backward_layers:

@@ -38,3 +38,9 @@ class ACM3ICPESSCPConfig(ACM3ICPEConfig):
     # Training
     sscp_p_carry: float = 0.5   # probability of chunk-continuation training per batch
     sscp_detach: bool = True    # detach carry at chunk boundary (True = stable)
+
+    # Carry placement inside the combined sequence.
+    #   "pre_query": [encoder_out, carry, queries]  — carry adjacent to the queries
+    #                (recommended; avoids dilution across the encoder token stream).
+    #   "prefix":    [carry, encoder_out, queries]  — original placement (ablation).
+    sscp_carry_position: str = "pre_query"  # "pre_query" | "prefix"

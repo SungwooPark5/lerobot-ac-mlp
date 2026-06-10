@@ -25,7 +25,12 @@ from lerobot.policies.acm3.configuration_acm3 import ACM3Config
 @PreTrainedConfig.register_subclass("acm3_sscp")
 @dataclass
 class ACM3SSCPConfig(ACM3Config):
-    """ACM3 + True SSM State Carryover Protocol (no ICPE)."""
+    """ACM3 + SSM State Carryover Protocol (no ICPE).
+
+    Note: SSCP carries a summary token (previous chunk's terminal decoder output),
+    not Mamba3's literal recurrent state tensor — it warms up the scan rather than
+    transferring h verbatim.
+    """
 
     # Inference
     sscp_enabled: bool = True     # if False, behaves identically to ACM3
@@ -33,3 +38,11 @@ class ACM3SSCPConfig(ACM3Config):
     # Training
     sscp_p_carry: float = 0.5    # probability of chunk-continuation training per batch
     sscp_detach: bool = True     # detach carry at chunk boundary (True = stable)
+
+    # Carry placement inside the combined sequence.
+    #   "pre_query": [encoder_out, carry, queries]  — carry adjacent to the queries
+    #                so the SSM state it seeds is NOT washed out by the (long) encoder
+    #                token stream before reaching the action queries. (recommended)
+    #   "prefix":    [carry, encoder_out, queries]  — original placement; carry is
+    #                diluted across all encoder tokens. Kept for the placement ablation.
+    sscp_carry_position: str = "pre_query"  # "pre_query" | "prefix"
