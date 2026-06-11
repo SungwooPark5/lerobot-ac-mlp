@@ -43,7 +43,10 @@ class RNNHistConfig(PreTrainedConfig):
     # Token dim + recurrent stack.
     dim_model: int = 512
     rnn_type: str = "lstm"         # "lstm" | "gru"
-    rnn_hidden: int = 1024
+    # rnn_hidden calibrated to ~param-match the ~48M m3 cluster (smoketest: hidden=1024
+    # → 44.37M; Total≈28·H²+3480·H+11.47M ⇒ H=1088 → ~48.4M). Param-match makes the
+    # "is the SSM needed vs generic recurrence?" comparison capacity-fair.
+    rnn_hidden: int = 1088
     n_rnn_layers: int = 4
     rnn_dropout: float = 0.1
 
