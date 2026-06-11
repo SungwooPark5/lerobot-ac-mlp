@@ -57,10 +57,11 @@ class MTILConfig(PreTrainedConfig):
     replace_final_stride_with_dilation: int = False
 
     # Token / model dimension.
-    # Scaled up (768 wide, 8-deep below) so total params ~param-match our 48M ACM3
+    # Scaled up (768 wide, 9-deep below) so total params ~param-match our 48M ACM3
     # models. MTIL has no Transformer encoder / CVAE, so its Mamba stack must be
     # wider+deeper to reach the same capacity — this removes the "baseline is smaller"
     # confound. (MTIL's own paper uses an even larger d_model=2048 stack.)
+    # Smoketest-calibrated: 8 layers→42.77M, 9 layers→~48.7M ≈ the m3 cluster (~48M).
     dim_model: int = 768
 
     # Mamba-2 history encoder (mamba_ssm.Mamba2). dim_model*expand must be divisible
@@ -69,7 +70,7 @@ class MTILConfig(PreTrainedConfig):
     mamba2_d_conv: int = 4
     mamba2_expand: int = 2
     mamba2_headdim: int = 64
-    n_mamba_layers: int = 8
+    n_mamba_layers: int = 9
 
     # Inference: ACT-style temporal aggregation across overlapping chunk predictions.
     temporal_ensemble_coeff: float | None = 0.01
