@@ -44,6 +44,23 @@ fairer, apples-to-apples comparison a top-venue reviewer expects.
    for robustness. (Fully faithful = full-episode per-position supervised training — a
    heavier data-pipeline change; documented as the faithful-max follow-up.)
 
+## Hyperparameters (verified against their code, 2026-06-12)
+- **LR = 1e-4, weight_decay = 1e-4, AdamW** — matches MTIL `train/train_par.py` (the
+  parallel/`*_par` variant we reproduce; their non-parallel `train.py` uses 2e-4/5e-4).
+- ⚠️ Difference: MTIL uses a **CosineAnnealingLR** schedule; ours currently has no
+  scheduler (`get_scheduler_preset → None`). Add cosine for closer faithfulness, or
+  cover via the LR sweep. Minor.
+
+## NOT code-identical (important — state honestly)
+This is a faithful reproduction of MTIL's *method*, NOT a copy of their repository.
+Differences: vision (our ResNet18 vs their DINOv2 features), framework (lerobot vs
+standalone), training (bounded window vs full-trajectory sequences), size (~46.5M vs
+their d_model=2048), scheduler (none vs cosine). Same: Mamba-2 SSM, history-encoder,
+per-step query + temporal aggregation, unbounded carry, no correction, LR 1e-4.
+Code-identical would mean their sim/data/eval pipeline → an unfair cross-pipeline
+comparison; the same-pipeline port is the fair baseline. If a code-identical number is
+wanted, cite MTIL's *reported* numbers separately (cannot share our results table).
+
 ## How to cite in the paper
 > "We compare against MTIL [cite], a Mamba-2 recurrent history-encoder policy that
 > carries an uncorrected SSM state. For a controlled comparison we reproduce MTIL's
