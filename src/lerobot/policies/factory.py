@@ -35,6 +35,7 @@ from lerobot.policies.acm3.configuration_acm3 import ACM3Config
 from lerobot.policies.acm3_sscp.configuration_acm3_sscp import ACM3SSCPConfig
 from lerobot.policies.acm3_sscp_literal.configuration_acm3_sscp_literal import ACM3SSCPLiteralConfig
 from lerobot.policies.mtil.configuration_mtil import MTILConfig
+from lerobot.policies.rnn_hist.configuration_rnn_hist import RNNHistConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.groot.configuration_groot import GrootConfig
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
@@ -112,6 +113,11 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
 
         return MTILPolicy
 
+    elif name == "rnn_hist":
+        from lerobot.policies.rnn_hist.modeling_rnn_hist import RNNHistPolicy
+
+        return RNNHistPolicy
+
     elif name == "vqbet":
         from lerobot.policies.vqbet.modeling_vqbet import VQBeTPolicy
 
@@ -186,6 +192,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACTSSCPConfig(**kwargs)
     elif policy_type == "mtil":
         return MTILConfig(**kwargs)
+    elif policy_type == "rnn_hist":
+        return RNNHistConfig(**kwargs)
     elif policy_type == "vqbet":
         return VQBeTConfig(**kwargs)
     elif policy_type == "pi0":
@@ -326,6 +334,14 @@ def make_pre_post_processors(
         from lerobot.policies.mtil.processor_mtil import make_mtil_pre_post_processors
 
         processors = make_mtil_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, RNNHistConfig):
+        from lerobot.policies.rnn_hist.processor_rnn_hist import make_rnn_hist_pre_post_processors
+
+        processors = make_rnn_hist_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )
