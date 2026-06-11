@@ -35,9 +35,14 @@ fairer, apples-to-apples comparison a top-venue reviewer expects.
    frames (default 16). MTIL trains on full-length episode sequences. Set `n_obs_steps`
    large to shrink the gap; our memory tasks (RememberColor cue→use gap ~10) fit within 16.
 3. **Deterministic head** (no CVAE) — matches MTIL (it has no CVAE).
-4. **Train/inference**: both use the bounded-window Mamba scan over the obs tokens
-   (consistent). MTIL's unbounded per-step state carry can be added later via
-   `Mamba2`'s `InferenceParams.step`; not needed for the targeted memory horizons.
+4. **Train/inference**: inference uses **unbounded recurrent state carry** across the
+   whole episode (`unbounded_carry=True`, via `Mamba2` + `InferenceParams` stepping) —
+   faithful to MTIL's defining O(1)-memory unbounded history. Training uses a bounded
+   obs-history window (`n_obs_steps=32`); the residual train(window)/infer(unbounded)
+   gap is the one honest deviation — set n_obs_steps ≥ the longest train-time dependency
+   to shrink it. A bounded-window inference fallback (`unbounded_carry=False`) is kept
+   for robustness. (Fully faithful = full-episode per-position supervised training — a
+   heavier data-pipeline change; documented as the faithful-max follow-up.)
 
 ## How to cite in the paper
 > "We compare against MTIL [cite], a Mamba-2 recurrent history-encoder policy that

@@ -37,11 +37,20 @@ class MTILConfig(PreTrainedConfig):
     """MTIL baseline config (Mamba-2 history encoder, no correction)."""
 
     # Input / output structure.
-    # n_obs_steps > 1: the bounded observation-history window fed to the Mamba-2
-    # encoder at training time (the recurrent history MTIL relies on).
-    n_obs_steps: int = 16
+    # n_obs_steps > 1: the observation-history window fed to the Mamba-2 encoder at
+    # TRAINING time (32 ≈ covers our memory-task cue→use gaps with margin).
+    n_obs_steps: int = 32
     chunk_size: int = 100
     n_action_steps: int = 1   # MTIL queries every step (+ temporal aggregation)
+
+    # Inference-time history (faithful to MTIL):
+    #   True  → unbounded recurrent state carry across the WHOLE episode via Mamba-2's
+    #           stateful step (conv/ssm state persists, reset only between episodes) —
+    #           MTIL's defining O(1)-memory, unbounded-history property.
+    #   False → bounded sliding-window re-scan of n_obs_steps frames (consistent w/ train,
+    #           but handicaps MTIL's memory; kept as a robustness fallback).
+    unbounded_carry: bool = True
+    max_infer_steps: int = 1200   # InferenceParams cache horizon (≥ episode length)
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {

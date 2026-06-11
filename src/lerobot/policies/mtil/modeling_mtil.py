@@ -27,8 +27,14 @@ from torchvision.ops.misc import FrozenBatchNorm2d
 
 try:
     from mamba_ssm import Mamba2
+    try:
+        from mamba_ssm.utils.generation import InferenceParams
+    except ImportError:
+        InferenceParams = None
     HAS_MAMBA2 = True
 except ImportError:
+    Mamba2 = None
+    InferenceParams = None
     HAS_MAMBA2 = False
 
 from lerobot.policies.mtil.configuration_mtil import MTILConfig
@@ -194,6 +200,32 @@ class MTILModel(nn.Module):
         flat = self.head(h_last)                                  # (B, K*A)
         return flat.view(h.shape[0], self.config.chunk_size, self.action_dim)
 
+    def step_one(self, tok: Tensor, inference_params) -> Tensor:
+        """Advance the recurrent state by ONE token (B, D) and predict a chunk.
+
+        Faithful unbounded carry: feeds a single observation token through the
+        Mamba-2 stack using a persistent InferenceParams (conv/ssm state survives
+        across calls), so history accumulates over the whole episode at O(1) memory.
+        """
+        h = tok.unsqueeze(1)                                      # (B, 1, D)
+        for layer in self.layers:
+            h = layer(h, inference_params=inference_params)
+        inference_params.seqlen_offset += 1
+        h_last = self.norm(h[:, -1])
+        flat = self.head(h_last)
+        return flat.view(tok.shape[0], self.config.chunk_size, self.action_dim)
+
+    def alloc_inference_cache(self, batch_size: int, max_seqlen: int):
+        """Allocate per-layer (conv_state, ssm_state) caches for stateful stepping."""
+        if InferenceParams is None:
+            raise ImportError("mamba_ssm.utils.generation.InferenceParams unavailable.")
+        ip = InferenceParams(max_seqlen=max_seqlen, max_batch_size=batch_size)
+        dtype = next(self.parameters()).dtype
+        for i, layer in enumerate(self.layers):
+            ip.key_value_memory_dict[i] = layer.allocate_inference_cache(
+                batch_size, max_seqlen, dtype=dtype)
+        return ip
+
 
 # ── Policy wrapper ───────────────────────────────────────────────────────────────
 
@@ -226,8 +258,11 @@ class MTILPolicy(PreTrainedPolicy):
             self.temporal_ensembler.reset()
         else:
             self._action_queue = deque([], maxlen=self.config.n_action_steps)
-        # Sliding observation-token window (bounded history of length n_obs_steps).
+        # Bounded fallback: sliding observation-token window of length n_obs_steps.
         self._obs_window: deque | None = deque([], maxlen=self.config.n_obs_steps)
+        # Unbounded (faithful) path: persistent Mamba-2 recurrent state, lazily
+        # allocated on the first step (when batch size is known), reset per episode.
+        self._ip = None
 
     # ── Inference: maintain a bounded obs-token window, query every step ──────────
 
@@ -263,9 +298,15 @@ class MTILPolicy(PreTrainedPolicy):
 
     def _predict(self, batch: dict[str, Tensor]) -> Tensor:
         cur = self._current_frame(batch)
-        # Encode current frame to a token and push into the sliding window.
         tok = self.model.obs_encoder(
             cur.get(OBS_STATE), cur.get(OBS_ENV_STATE), cur.get(OBS_IMAGES))  # (B, D)
+        if self.config.unbounded_carry:
+            # Faithful MTIL: carry recurrent state across the whole episode (O(1) mem).
+            if self._ip is None:
+                self._ip = self.model.alloc_inference_cache(
+                    tok.shape[0], self.config.max_infer_steps)
+            return self.model.step_one(tok, self._ip)            # (B, K, A)
+        # Bounded fallback: re-scan the sliding window.
         self._obs_window.append(tok)
         seq = torch.stack(list(self._obs_window), dim=1)         # (B, t<=n_obs_steps, D)
         return self.model.predict_chunk_from_seq(seq)            # (B, K, A)
