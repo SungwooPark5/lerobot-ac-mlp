@@ -25,7 +25,11 @@ fairer, apples-to-apples comparison a top-venue reviewer expects.
 1. **Vision**: same ResNet-18 backbone as our ACM3 models, NOT MTIL's DINOv2 features.
    Rationale: isolates the *temporal model* as the only difference (fair). DINOv2 would
    confound vision quality with temporal modeling.
-2. **History length**: trained on a **bounded observation window** of `n_obs_steps`
+2. **Capacity (param-match)**: MTIL has no Transformer encoder / CVAE, so at the
+   ACM3 token width (512, 4 layers) it is only ~19M vs our ~48M models. To remove
+   the "baseline is smaller" confound we scale its Mamba stack (dim_model=768,
+   n_mamba_layers=8) to ~param-match ~48M. Report this in the param table.
+3. **History length**: trained on a **bounded observation window** of `n_obs_steps`
    frames (default 16). MTIL trains on full-length episode sequences. Set `n_obs_steps`
    large to shrink the gap; our memory tasks (RememberColor cue→use gap ~10) fit within 16.
 3. **Deterministic head** (no CVAE) — matches MTIL (it has no CVAE).
