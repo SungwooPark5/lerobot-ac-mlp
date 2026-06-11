@@ -133,15 +133,18 @@ def ema_states(new_states, prev_states, beta: float):
 class CarryStateFusion(nn.Module):
     """Boundary-time fusion of the carried per-layer ssm_state ("mlp" / "gated").
 
-    The ssm_state has shape (B, H, P, N) — H heads, P headdim, N d_state. Gates and
-    observation targets are computed per (head, state-channel) and broadcast over P.
+    The ssm_state has shape (B, H, P, N) — H heads, P headdim, N d_state. Both variants
+    act at the d_state granularity, SHARED across heads (H) and headdim (P) — so the gate
+    is per-state-channel and the parameter count is matched to m3_mlp (not scaling with
+    nheads). This keeps the m3_mlp↔m3_cor comparison capacity-controlled (only difference:
+    observation-conditioning).
 
     mlp   — h' = h + MLP(h), residual with zero-init output layer (starts as
             literal carry). No observation input: faithful adaptation of
             AVA-VLA's plain recurrent-state projection r = B(h).
     gated — h' = (1 - G) ⊙ h + G ⊙ S(e_obs), the proposed PEC correction.
-            G = σ(g([mean_P(h); e_obs]) + b₀), b₀ = carry_gate_bias_init < 0,
-            S = zero-init linear map of e_obs into state space.
+            G = σ(g([mean_{H,P}(h); e_obs]) + b₀) ∈ R^N, broadcast over H,P;
+            b₀ = carry_gate_bias_init < 0; S = zero-init Linear(D→N) map of e_obs.
     """
 
     def __init__(self, config):
@@ -150,8 +153,8 @@ class CarryStateFusion(nn.Module):
         d_inner = config.dim_model * config.mamba3_expand
         self.nheads = d_inner // config.mamba3_headdim
         self.d_state = config.mamba3_d_state
-        hn = self.nheads * self.d_state
         n_layers = config.n_decoder_layers
+        N, D = self.d_state, config.dim_model
 
         # Interpretability hook: when `record_gate` is True, forward() stashes the
         # per-layer mean gate G in `last_gate` (list[float], len n_layers). Used by
@@ -160,22 +163,27 @@ class CarryStateFusion(nn.Module):
         self.record_gate: bool = False
         self.last_gate: list[float] | None = None
 
+        # Both fusion variants operate at the d_state granularity, SHARED across the
+        # H heads and P headdim (exactly like m3_mlp's per-state-vector MLP), so the
+        # parameter footprint of m3_cor is matched to m3_mlp rather than scaling with
+        # nheads. This makes the m3_mlp↔m3_cor comparison capacity-controlled: the only
+        # difference is observation-conditioning (the active ingredient we test).
         if self.mode == "mlp":
             def make_mlp():
-                lin2 = nn.Linear(self.d_state, self.d_state)
+                lin2 = nn.Linear(N, N)
                 nn.init.zeros_(lin2.weight)
                 nn.init.zeros_(lin2.bias)
-                return nn.Sequential(nn.Linear(self.d_state, self.d_state), nn.Tanh(), lin2)
+                return nn.Sequential(nn.Linear(N, N), nn.Tanh(), lin2)
             self.proj = nn.ModuleList([make_mlp() for _ in range(n_layers)])
         elif self.mode == "gated":
             hidden = config.carry_fusion_hidden
             def make_gate():
-                out = nn.Linear(hidden, hn)
+                out = nn.Linear(hidden, N)          # per-state-channel gate, broadcast over H,P
                 nn.init.zeros_(out.weight)
                 nn.init.constant_(out.bias, config.carry_gate_bias_init)
-                return nn.Sequential(nn.Linear(hn + config.dim_model, hidden), nn.SiLU(), out)
+                return nn.Sequential(nn.Linear(N + D, hidden), nn.SiLU(), out)
             def make_target():
-                s = nn.Linear(config.dim_model, hn)
+                s = nn.Linear(D, N)                 # obs → per-channel target, broadcast over H,P
                 nn.init.zeros_(s.weight)
                 nn.init.zeros_(s.bias)
                 return s
@@ -197,11 +205,11 @@ class CarryStateFusion(nn.Module):
             ssm_in = ssm.to(e_obs.dtype)
             if self.mode == "mlp":
                 ssm_out = ssm_in + self.proj[i](ssm_in)
-            else:  # gated
-                pooled = ssm_in.mean(dim=2).reshape(b, h * n)            # (B, H*N)
+            else:  # gated — per-state-channel gate, broadcast over heads (H) and headdim (P)
+                pooled = ssm_in.mean(dim=(1, 2))                          # (B, N)
                 gate = torch.sigmoid(self.gate[i](torch.cat([pooled, e_obs], dim=-1)))
-                gate = gate.view(b, h, 1, n)                              # broadcast over P
-                target = self.target[i](e_obs).view(b, h, 1, n)
+                gate = gate.view(b, 1, 1, n)                              # broadcast over H, P
+                target = self.target[i](e_obs).view(b, 1, 1, n)          # broadcast over H, P
                 ssm_out = (1.0 - gate) * ssm_in + gate * target
                 if self.record_gate:
                     gate_log.append(float(gate.mean().item()))
