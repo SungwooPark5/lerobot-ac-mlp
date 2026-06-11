@@ -34,6 +34,7 @@ from lerobot.policies.act_sscp.configuration_act_sscp import ACTSSCPConfig
 from lerobot.policies.acm3.configuration_acm3 import ACM3Config
 from lerobot.policies.acm3_sscp.configuration_acm3_sscp import ACM3SSCPConfig
 from lerobot.policies.acm3_sscp_literal.configuration_acm3_sscp_literal import ACM3SSCPLiteralConfig
+from lerobot.policies.mtil.configuration_mtil import MTILConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.groot.configuration_groot import GrootConfig
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
@@ -105,6 +106,11 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.act_sscp.modeling_act_sscp import ACTSSCPPolicy
 
         return ACTSSCPPolicy
+
+    elif name == "mtil":
+        from lerobot.policies.mtil.modeling_mtil import MTILPolicy
+
+        return MTILPolicy
 
     elif name == "vqbet":
         from lerobot.policies.vqbet.modeling_vqbet import VQBeTPolicy
@@ -178,6 +184,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACM3SSCPLiteralConfig(**kwargs)
     elif policy_type == "act_sscp":
         return ACTSSCPConfig(**kwargs)
+    elif policy_type == "mtil":
+        return MTILConfig(**kwargs)
     elif policy_type == "vqbet":
         return VQBeTConfig(**kwargs)
     elif policy_type == "pi0":
@@ -310,6 +318,14 @@ def make_pre_post_processors(
         from lerobot.policies.diffusion.processor_diffusion import make_diffusion_pre_post_processors
 
         processors = make_diffusion_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, MTILConfig):
+        from lerobot.policies.mtil.processor_mtil import make_mtil_pre_post_processors
+
+        processors = make_mtil_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

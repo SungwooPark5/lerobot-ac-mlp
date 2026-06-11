@@ -18,6 +18,7 @@ from .act_sscp.configuration_act_sscp import ACTSSCPConfig as ACTSSCPConfig
 from .acm3.configuration_acm3 import ACM3Config as ACM3Config
 from .acm3_sscp.configuration_acm3_sscp import ACM3SSCPConfig as ACM3SSCPConfig
 from .acm3_sscp_literal.configuration_acm3_sscp_literal import ACM3SSCPLiteralConfig as ACM3SSCPLiteralConfig
+from .mtil.configuration_mtil import MTILConfig as MTILConfig
 from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
 from .groot.configuration_groot import GrootConfig as GrootConfig
 from .pi0.configuration_pi0 import PI0Config as PI0Config
@@ -34,6 +35,7 @@ __all__ = [
     "ACM3Config",
     "ACM3SSCPConfig",
     "ACM3SSCPLiteralConfig",
+    "MTILConfig",
     "DiffusionConfig",
     "PI0Config",
     "PI05Config",
