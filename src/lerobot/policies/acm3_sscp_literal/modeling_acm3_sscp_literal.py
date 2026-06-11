@@ -1,4 +1,4 @@
-"""ACM3 + LITERAL SSM State Carryover (true SSCP).
+"""ACM3 + literal SSM state carryover, with optional boundary-time carry fusion.
 
 Carries Mamba3's actual recurrent state (angle, ssm, k, v) across chunk boundaries
 using the SISO kernel's `Input_States` / `return_final_states` path — verified
@@ -10,8 +10,21 @@ Design (Option A — continuous stream):
   never resets: the effective stream is [enc_0, q_0, enc_1, q_1, ...]. At training,
   the carried state is detached at the boundary (truncated BPTT) when sscp_detach.
 
-Contrast with acm3_sscp (summary-token warm-up): there a single 512-d output token
-is prepended; here the *entire* recurrent state is carried.
+Carry fusion (v8): the carried state is a *prediction* of where the stream should
+be after open-loop execution; reality may have diverged (perturbations, tracking
+error). `config.carry_fusion` selects how the carry is treated at each boundary:
+
+  "none"  — literal handoff (m3_lit, MTIL-style; original behavior)
+  "ema"   — fixed EMA across boundaries, gradient-free (m3_ema, ReMem-VLA-style)
+  "mlp"   — learned projection, no observation (m3_mlp, AVA-VLA-style)
+  "gated" — PEC gate, learned observation-driven correction (m3_cor, proposed):
+              h' = (1 - G) ⊙ h + G ⊙ S(e_obs)
+              G  = σ( g([pool(h); e_obs]) + b₀ ),  b₀ < 0
+            G → 0 recovers literal carry (MTIL limit); G → 1 with S → 0 recovers a
+            zero-state reset (ACT limit) — the gate spans both extremes.
+
+Fusion acts on the ssm_state component only; angle (positional continuity) and the
+k/v trapezoid-rule correction terms pass through unchanged.
 
 Assumes SISO mode (is_mimo=False, is_outproj_norm=False) — the canonical config.
 """
@@ -100,6 +113,92 @@ def detach_states(states):
     return [tuple(t.detach() if torch.is_tensor(t) else t for t in st) for st in states]
 
 
+def ema_states(new_states, prev_states, beta: float):
+    """ReMem-VLA-style fixed EMA on the ssm_state across boundaries (gradient-free).
+
+    c_n = beta * h_n + (1 - beta) * c_{n-1}, with c_{-1} = 0 (so the first boundary
+    yields beta * h_0). angle/k/v are taken from new_states unchanged.
+    """
+    if new_states is None:
+        return None
+    fused = []
+    for i, st in enumerate(new_states):
+        angle, ssm, k, v = st
+        prev_ssm = prev_states[i][1] if prev_states is not None else None
+        ssm = beta * ssm + (1.0 - beta) * prev_ssm if prev_ssm is not None else beta * ssm
+        fused.append((angle, ssm, k, v))
+    return fused
+
+
+class CarryStateFusion(nn.Module):
+    """Boundary-time fusion of the carried per-layer ssm_state ("mlp" / "gated").
+
+    The ssm_state has shape (B, H, P, N) — H heads, P headdim, N d_state. Gates and
+    observation targets are computed per (head, state-channel) and broadcast over P.
+
+    mlp   — h' = h + MLP(h), residual with zero-init output layer (starts as
+            literal carry). No observation input: faithful adaptation of
+            AVA-VLA's plain recurrent-state projection r = B(h).
+    gated — h' = (1 - G) ⊙ h + G ⊙ S(e_obs), the proposed PEC correction.
+            G = σ(g([mean_P(h); e_obs]) + b₀), b₀ = carry_gate_bias_init < 0,
+            S = zero-init linear map of e_obs into state space.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self.mode = config.carry_fusion
+        d_inner = config.dim_model * config.mamba3_expand
+        self.nheads = d_inner // config.mamba3_headdim
+        self.d_state = config.mamba3_d_state
+        hn = self.nheads * self.d_state
+        n_layers = config.n_decoder_layers
+
+        if self.mode == "mlp":
+            def make_mlp():
+                lin2 = nn.Linear(self.d_state, self.d_state)
+                nn.init.zeros_(lin2.weight)
+                nn.init.zeros_(lin2.bias)
+                return nn.Sequential(nn.Linear(self.d_state, self.d_state), nn.Tanh(), lin2)
+            self.proj = nn.ModuleList([make_mlp() for _ in range(n_layers)])
+        elif self.mode == "gated":
+            hidden = config.carry_fusion_hidden
+            def make_gate():
+                out = nn.Linear(hidden, hn)
+                nn.init.zeros_(out.weight)
+                nn.init.constant_(out.bias, config.carry_gate_bias_init)
+                return nn.Sequential(nn.Linear(hn + config.dim_model, hidden), nn.SiLU(), out)
+            def make_target():
+                s = nn.Linear(config.dim_model, hn)
+                nn.init.zeros_(s.weight)
+                nn.init.zeros_(s.bias)
+                return s
+            self.gate = nn.ModuleList([make_gate() for _ in range(n_layers)])
+            self.target = nn.ModuleList([make_target() for _ in range(n_layers)])
+        else:
+            raise ValueError(f"CarryStateFusion supports 'mlp'/'gated', got '{self.mode}'.")
+
+    def forward(self, states, e_obs: Tensor):
+        """states: per-layer list of (angle, ssm, k, v). e_obs: (B, D) pooled obs."""
+        fused = []
+        for i, st in enumerate(states):
+            angle, ssm, k, v = st
+            b, h, p, n = ssm.shape
+            assert h == self.nheads and n == self.d_state, (
+                f"ssm_state shape {tuple(ssm.shape)} != configured (H={self.nheads}, N={self.d_state})"
+            )
+            ssm_in = ssm.to(e_obs.dtype)
+            if self.mode == "mlp":
+                ssm_out = ssm_in + self.proj[i](ssm_in)
+            else:  # gated
+                pooled = ssm_in.mean(dim=2).reshape(b, h * n)            # (B, H*N)
+                gate = torch.sigmoid(self.gate[i](torch.cat([pooled, e_obs], dim=-1)))
+                gate = gate.view(b, h, 1, n)                              # broadcast over P
+                target = self.target[i](e_obs).view(b, h, 1, n)
+                ssm_out = (1.0 - gate) * ssm_in + gate * target
+            fused.append((angle, ssm_out.to(ssm.dtype), k, v))
+        return fused
+
+
 # ── Decoder with literal per-layer state handoff ──────────────────────────────
 
 class Mamba3LiteralSSCPDecoder(nn.Module):
@@ -156,11 +255,19 @@ class Mamba3LiteralSSCPDecoder(nn.Module):
 # ── Model ──────────────────────────────────────────────────────────────────────
 
 class ACM3SSCPLiteral(ACM3SSCP):
-    """ACM3SSCP with the decoder replaced by a literal-state-handoff decoder."""
+    """ACM3SSCP with the decoder replaced by a literal-state-handoff decoder.
+
+    With carry_fusion in ("mlp", "gated") the incoming carry is fused at the start
+    of the chunk — for "gated" using the *current* chunk's pooled encoder output as
+    e_obs, so the correction is driven by the fresh observation.
+    """
 
     def __init__(self, config: ACM3SSCPLiteralConfig):
         super().__init__(config)
         self.decoder = Mamba3LiteralSSCPDecoder(config)
+        self.carry_fusion = (
+            CarryStateFusion(config) if config.carry_fusion in ("mlp", "gated") else None
+        )
 
     def forward(self, batch: dict[str, Tensor], carry: list | None = None,
                 return_state: bool = False) -> tuple:
@@ -169,6 +276,9 @@ class ACM3SSCPLiteral(ACM3SSCP):
         bs = (batch[OBS_IMAGES][0].shape[0] if OBS_IMAGES in batch
               else batch[OBS_ENV_STATE].shape[0])
         encoder_out, mu, log_sigma_x2 = self._encode(batch, bs)
+        if carry is not None and self.carry_fusion is not None:
+            e_obs = encoder_out.mean(dim=0)  # (B, D) pooled fresh observation
+            carry = self.carry_fusion(carry, e_obs)
         K = self.config.chunk_size
         decoder_in = self.decoder_pos_embed.weight.unsqueeze(1)  # (K, 1, D)
         decoder_out, new_states = self.decoder(
@@ -240,7 +350,10 @@ class ACM3SSCPLiteralPolicy(PreTrainedPolicy):
         carry = self._carry if self.config.sscp_enabled else None
         actions, _, new_states = self.model(batch, carry=carry, return_state=True)
         if self.config.sscp_enabled:
-            self._carry = detach_states(new_states)
+            new_states = detach_states(new_states)
+            if self.config.carry_fusion == "ema":
+                new_states = ema_states(new_states, self._carry, self.config.carry_ema_beta)
+            self._carry = new_states
         return actions
 
     # ── Training ───────────────────────────────────────────────────────────────
@@ -286,6 +399,9 @@ class ACM3SSCPLiteralPolicy(PreTrainedPolicy):
         loss_n, loss_dict_n, states_n = self._forward_single(batch_n, carry=None)
 
         carry = detach_states(states_n) if self.config.sscp_detach else states_n
+        if self.config.carry_fusion == "ema":
+            # First boundary of the pair: c = beta * h (c_{-1} = 0), matching inference.
+            carry = ema_states(carry, None, self.config.carry_ema_beta)
 
         _n1_candidates = {
             OBS_STATE:       batch.get("obs_state_n1",     batch.get(OBS_STATE)),

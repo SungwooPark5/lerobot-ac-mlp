@@ -1,14 +1,13 @@
 """Configuration for ACT + SSM-State-Carryover-style carry (control experiment).
 
-This is the C2 analog of act_icpe (the C1 control).  It applies the SAME carry
-mechanism used by acm3_sscp — the terminal decoder output token from chunk n is
-made available to chunk n+1 — but to ACT's Transformer decoder.
+It applies the SAME carry mechanism used by acm3_sscp — the terminal decoder
+output token from chunk n is made available to chunk n+1 — but to ACT's
+Transformer decoder.
 
 Expected result: little/no improvement over vanilla ACT, because for a Transformer
 the carry is merely one extra cross-attention key/value; it does NOT warm up any
 recurrent hidden state (Transformers are stateless across the sequence).  This
-control is what licenses the paper's claim that SSCP's benefit is SSM-specific —
-exactly mirroring how N1 (ACT+ICPE) licenses the ICPE-is-SSM-specific claim.
+control is what licenses the paper's claim that the carry benefit is SSM-specific.
 """
 
 from dataclasses import dataclass

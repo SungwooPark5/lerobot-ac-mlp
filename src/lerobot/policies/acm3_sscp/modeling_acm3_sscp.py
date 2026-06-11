@@ -33,10 +33,8 @@ Training strategy (Chunk-Continuation):
   Loss = L1(chunk_n) + L1(chunk_n+1).
   With probability (1 - sscp_p_carry), standard training without carry.
 
-No ICPE:
-  This policy has no Intra-Chunk Phase Embedding. Decoder queries use only the
-  learned positional embedding (no phase signal injection). Compare with
-  acm3_icpe_sscp which adds both ICPE and SSCP.
+No phase embedding:
+  Decoder queries use only the learned positional embedding.
 """
 
 from collections import deque
