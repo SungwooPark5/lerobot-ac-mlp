@@ -153,6 +153,13 @@ class CarryStateFusion(nn.Module):
         hn = self.nheads * self.d_state
         n_layers = config.n_decoder_layers
 
+        # Interpretability hook: when `record_gate` is True, forward() stashes the
+        # per-layer mean gate G in `last_gate` (list[float], len n_layers). Used by
+        # the gate-analysis notebook to show "G opens after perturbation, closes
+        # while a cue must be remembered". No cost when disabled.
+        self.record_gate: bool = False
+        self.last_gate: list[float] | None = None
+
         if self.mode == "mlp":
             def make_mlp():
                 lin2 = nn.Linear(self.d_state, self.d_state)
@@ -180,6 +187,7 @@ class CarryStateFusion(nn.Module):
     def forward(self, states, e_obs: Tensor):
         """states: per-layer list of (angle, ssm, k, v). e_obs: (B, D) pooled obs."""
         fused = []
+        gate_log: list[float] = []
         for i, st in enumerate(states):
             angle, ssm, k, v = st
             b, h, p, n = ssm.shape
@@ -195,7 +203,11 @@ class CarryStateFusion(nn.Module):
                 gate = gate.view(b, h, 1, n)                              # broadcast over P
                 target = self.target[i](e_obs).view(b, h, 1, n)
                 ssm_out = (1.0 - gate) * ssm_in + gate * target
+                if self.record_gate:
+                    gate_log.append(float(gate.mean().item()))
             fused.append((angle, ssm_out.to(ssm.dtype), k, v))
+        if self.record_gate and gate_log:
+            self.last_gate = gate_log
         return fused
 
 
