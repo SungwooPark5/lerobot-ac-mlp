@@ -28,7 +28,9 @@ fairer, apples-to-apples comparison a top-venue reviewer expects.
 2. **Capacity (param-match)**: MTIL has no Transformer encoder / CVAE, so at the
    ACM3 token width (512, 4 layers) it is only ~19M vs our ~48M models. To remove
    the "baseline is smaller" confound we scale its Mamba stack (dim_model=768,
-   n_mamba_layers=8) to ~param-match ~48M. Report this in the param table.
+   n_mamba_layers=9) to **46.53M** (measured) — within ~3.4% of the m3 cluster
+   (47.98–48.19M) and the closest integer-layer match. Report this true count in the
+   param table; the exact capacity control is the internal m3_* spectrum, not MTIL.
 3. **History length**: trained on a **bounded observation window** of `n_obs_steps`
    frames (default 16). MTIL trains on full-length episode sequences. Set `n_obs_steps`
    large to shrink the gap; our memory tasks (RememberColor cue→use gap ~10) fit within 16.

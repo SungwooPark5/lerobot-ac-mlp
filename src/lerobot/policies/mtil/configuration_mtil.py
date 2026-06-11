@@ -61,7 +61,10 @@ class MTILConfig(PreTrainedConfig):
     # models. MTIL has no Transformer encoder / CVAE, so its Mamba stack must be
     # wider+deeper to reach the same capacity — this removes the "baseline is smaller"
     # confound. (MTIL's own paper uses an even larger d_model=2048 stack.)
-    # Smoketest-calibrated: 8 layers→42.77M, 9 layers→~48.7M ≈ the m3 cluster (~48M).
+    # Smoketest-measured: 9 layers → 46.53M, ~3.4% under the m3 cluster (47.98–48.19M)
+    # and the closest integer-layer match (10 layers would overshoot to ~50M).
+    # Accepted: the exact capacity control is the internal m3_* spectrum; MTIL is an
+    # external baseline reported with its true 46.53M param count.
     dim_model: int = 768
 
     # Mamba-2 history encoder (mamba_ssm.Mamba2). dim_model*expand must be divisible
