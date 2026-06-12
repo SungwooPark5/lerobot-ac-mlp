@@ -15,9 +15,9 @@
 
 from .act.configuration_act import ACTConfig as ACTConfig
 from .act_sscp.configuration_act_sscp import ACTSSCPConfig as ACTSSCPConfig
-from .acm3.configuration_acm3 import ACM3Config as ACM3Config
-from .acm3_sscp.configuration_acm3_sscp import ACM3SSCPConfig as ACM3SSCPConfig
-from .acm3_sscp_literal.configuration_acm3_sscp_literal import ACM3SSCPLiteralConfig as ACM3SSCPLiteralConfig
+from .acm2.configuration_acm2 import ACM2Config as ACM2Config
+from .acm2_sscp.configuration_acm2_sscp import ACM2SSCPConfig as ACM2SSCPConfig
+from .acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig as ACM2SSCPLiteralConfig
 from .mtil.configuration_mtil import MTILConfig as MTILConfig
 from .rnn_hist.configuration_rnn_hist import RNNHistConfig as RNNHistConfig
 from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
@@ -33,9 +33,9 @@ from .xvla.configuration_xvla import XVLAConfig as XVLAConfig
 __all__ = [
     "ACTConfig",
     "ACTSSCPConfig",
-    "ACM3Config",
-    "ACM3SSCPConfig",
-    "ACM3SSCPLiteralConfig",
+    "ACM2Config",
+    "ACM2SSCPConfig",
+    "ACM2SSCPLiteralConfig",
     "MTILConfig",
     "RNNHistConfig",
     "DiffusionConfig",

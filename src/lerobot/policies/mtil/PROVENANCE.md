@@ -6,7 +6,7 @@ Official code: https://github.com/yulinzhouZYL/MTIL (verified 2026-06-11, `test/
 `mamba_policy_par.py`, `inference_par.py`, `evaluate_model_transfer.py`).
 
 This directory is an **external baseline reproduced inside our lerobot framework** so
-it trains/evaluates on the **same dataset, sim, tasks, and metrics** as our ACM3
+it trains/evaluates on the **same dataset, sim, tasks, and metrics** as our ACM2
 carry-spectrum models — the only difference is the temporal model. Running it inside
 our harness (rather than MTIL's separate repo on a different sim/data pipeline) is the
 fairer, apples-to-apples comparison a top-venue reviewer expects.
@@ -22,15 +22,17 @@ fairer, apples-to-apples comparison a top-venue reviewer expects.
 | State reset only **between episodes** | `reset_hiddens()` | `reset()` clears the window |
 
 ## Adapted for our framework (honest deviations — state these in the paper)
-1. **Vision**: same ResNet-18 backbone as our ACM3 models, NOT MTIL's DINOv2 features.
+1. **Vision**: same ResNet-18 backbone as our ACM2 models, NOT MTIL's DINOv2 features.
    Rationale: isolates the *temporal model* as the only difference (fair). DINOv2 would
    confound vision quality with temporal modeling.
 2. **Capacity (param-match)**: MTIL has no Transformer encoder / CVAE, so at the
-   ACM3 token width (512, 4 layers) it is only ~19M vs our ~48M models. To remove
+   ACM2 token width (512, 4 layers) it is only ~19M vs our ~48M models. To remove
    the "baseline is smaller" confound we scale its Mamba stack (dim_model=768,
-   n_mamba_layers=9) to **46.53M** (measured) — within ~3.4% of the m3 cluster
-   (47.98–48.19M) and the closest integer-layer match. Report this true count in the
-   param table; the exact capacity control is the internal m3_* spectrum, not MTIL.
+   n_mamba_layers=9) to **46.53M** (measured) — within ~3.4% of the m2 cluster
+   (~48M) and the closest integer-layer match. Report this true count in the
+   param table; the exact capacity control is the internal m2_* spectrum, not MTIL.
+   ⚠️ 2026-06-12 backbone switch Mamba-3→Mamba-2: re-run `count_params_flops.py` on the
+   cluster to refresh the exact m2_* counts (Mamba-2 per-layer params differ from Mamba-3).
 3. **History length**: trained on a **bounded observation window** of `n_obs_steps`
    frames (default 16). MTIL trains on full-length episode sequences. Set `n_obs_steps`
    large to shrink the gap; our memory tasks (RememberColor cue→use gap ~10) fit within 16.
@@ -67,7 +69,60 @@ wanted, cite MTIL's *reported* numbers separately (cannot share our results tabl
 > temporal model in our framework (same ResNet backbone, dataset, sim, and metrics);
 > see App. X for faithful-vs-adapted details."
 
-Distinguish from `m3_lit`: `m3_lit` is the *uncorrected-carry ablation within our ACM3
-chunk-decoder* (Mamba-3, open-loop chunk execution); `mtil` is the *faithful MTIL
+Distinguish from `m2_lit`: `m2_lit` is the *uncorrected-carry ablation within our ACM2
+chunk-decoder* (Mamba-2, open-loop chunk execution); `mtil` is the *faithful MTIL
 architecture* (Mamba-2, per-step history encoder + temporal aggregation). Both lack
 state correction — the property our method adds.
+
+## ✅ Verified against primary sources (2026-06-12 deep-research, 20 sources, 3-vote adversarial)
+
+Every MTIL setup fact below was confirmed by **direct quotes** from the MTIL paper
+(arXiv:2505.12410 v1), the official repo (github.com/yulinzhouZYL/MTIL), the original
+ACT paper (arXiv:2304.13705), the act repo (github.com/tonyzhaozh/act), and lerobot
+dataset cards. Use these verbatim for the paper / rebuttal — do NOT paraphrase from memory.
+
+### MTIL reported numbers (ACT-sim benchmark, Table I) — CONFIRMED 3-0
+| Method | Cube Transfer | Bimanual Insertion |
+|---|---|---|
+| ACT | 90.0 ± 2.0 | 50.0 ± 3.5 |
+| MTIL (10-step history) | 92.0 ± 1.5 | 56.0 ± 2.5 |
+| **MTIL (Full history)** | **100.0 ± 0.0** | **84.0 ± 2.1** |
+
+3 seeds, single RTX 4090. **The "100%" is ONE cell: Cube Transfer, Full-history.**
+Insertion is 84% even in their best config; with 10-step history MTIL ≈ ACT (92/56 vs 90/50).
+
+### MTIL's self-strengthened setup (= why the headline is high) — CONFIRMED
+- **Demos**: **100 *scripted-policy* demonstrations/task**, ~400 steps (Appendix A.1).
+  ⚠️ scripted, NOT human — cleaner/more consistent than our 50 *human* demos.
+- **Vision**: headline rows use **frozen DINOv2 ViT-L/14** (1024-dim, patch 14);
+  ResNet18 is reported only as a "fair comparison with ACT" ablation (Fig 2b, App A.1).
+  (Table I has no backbone column → the 100%-row==DINOv2 link is a well-grounded
+  inference from App A.1 + Fig 2b, not a printed cell.)
+- **Capacity**: d_model=2048, d_state=512, 4 Mamba layers, K=50 (paper Table 6).
+  Code/paper gap: code default `future_steps=16` (real action chunk); `MambaConfig.chunk_size=256`
+  is the SSM scan chunk, not the action chunk — "chunk_size" is overloaded in their code.
+- **Optimizer**: AdamW + CosineAnnealingLR. train.py LR=2e-4/wd=5e-4; train_par.py LR=1e-4/wd=1e-4.
+- **Eval**: closed-loop per-step (query_frequency=1, env.step every t over 400 steps) + temporal ensemble.
+
+### Standard ACT/ALOHA practice (= what WE use) — CONFIRMED 3-0
+- **50 demonstrations/task** (both scripted and human variants), ResNet18 backbone,
+  **chunk_size k=100** — original ACT paper (arXiv:2304.13705) + act repo constants.py
+  (`num_episodes=50`) + lerobot `aloha_sim_transfer_cube_human` info.json (`total_episodes=50`).
+
+### Verdict (Q12) — CONFIRMED 3-0, with one reverse nuance
+Our **50 human demos + ResNet18 + chunk100 + param-match + same-pipeline** IS the genuine
+ACT/ALOHA standard. MTIL's **100 scripted + DINOv2 + d2048 + full-history** is strengthened
+above it → cite their 100%/84% separately, never in our results table.
+- 🔴 **Honest reverse (do NOT overclaim)**: MTIL ALSO ran a **ResNet18 param-matched ablation
+  that still beat ACT**. So MTIL's gain is NOT solely from the strengthened config — `mtil`
+  is a *real* competitor, not a strawman. Our contribution is the **correction** (m2_cor vs
+  m2_lit) and **efficiency** (1/K), NOT beating mtil on clean SR.
+- ⛔ **Unverified — do NOT claim**: that Robomimic's 1.00 cells are "saturated / Diffusion
+  Policy also 1.00" (could not confirm from a primary quote; left open).
+
+### Paper-ready framing sentence
+> "The ACT/ALOHA standard is 50 demos, ResNet18, chunk 100 [Zhao 2023]; we reproduce all
+> baselines in this standard pipeline with param-matching. MTIL's reported 100.0/84.0
+> [MTIL 2025, Table I] uses 100 scripted demos, a frozen DINOv2 ViT-L/14, d_model=2048, and
+> full history; we cite it separately and reproduce MTIL's *temporal model* under the standard
+> setup (matching their own ResNet18 fair-comparison ablation)."

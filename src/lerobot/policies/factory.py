@@ -31,9 +31,9 @@ from lerobot.envs.configs import EnvConfig
 from lerobot.envs.utils import env_to_policy_features
 from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act_sscp.configuration_act_sscp import ACTSSCPConfig
-from lerobot.policies.acm3.configuration_acm3 import ACM3Config
-from lerobot.policies.acm3_sscp.configuration_acm3_sscp import ACM3SSCPConfig
-from lerobot.policies.acm3_sscp_literal.configuration_acm3_sscp_literal import ACM3SSCPLiteralConfig
+from lerobot.policies.acm2.configuration_acm2 import ACM2Config
+from lerobot.policies.acm2_sscp.configuration_acm2_sscp import ACM2SSCPConfig
+from lerobot.policies.acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig
 from lerobot.policies.mtil.configuration_mtil import MTILConfig
 from lerobot.policies.rnn_hist.configuration_rnn_hist import RNNHistConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
@@ -88,20 +88,20 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         
         return ACTPolicy
         
-    elif name == "acm3":
-        from lerobot.policies.acm3.modeling_acm3 import ACM3Policy
+    elif name == "acm2":
+        from lerobot.policies.acm2.modeling_acm2 import ACM2Policy
 
-        return ACM3Policy
+        return ACM2Policy
 
-    elif name == "acm3_sscp":
-        from lerobot.policies.acm3_sscp.modeling_acm3_sscp import ACM3SSCPPolicy
+    elif name == "acm2_sscp":
+        from lerobot.policies.acm2_sscp.modeling_acm2_sscp import ACM2SSCPPolicy
 
-        return ACM3SSCPPolicy
+        return ACM2SSCPPolicy
 
-    elif name == "acm3_sscp_literal":
-        from lerobot.policies.acm3_sscp_literal.modeling_acm3_sscp_literal import ACM3SSCPLiteralPolicy
+    elif name == "acm2_sscp_literal":
+        from lerobot.policies.acm2_sscp_literal.modeling_acm2_sscp_literal import ACM2SSCPLiteralPolicy
 
-        return ACM3SSCPLiteralPolicy
+        return ACM2SSCPLiteralPolicy
 
     elif name == "act_sscp":
         from lerobot.policies.act_sscp.modeling_act_sscp import ACTSSCPPolicy
@@ -182,12 +182,12 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return DiffusionConfig(**kwargs)
     elif policy_type == "act":
         return ACTConfig(**kwargs)
-    elif policy_type == "acm3":
-        return ACM3Config(**kwargs)
-    elif policy_type == "acm3_sscp":
-        return ACM3SSCPConfig(**kwargs)
-    elif policy_type == "acm3_sscp_literal":
-        return ACM3SSCPLiteralConfig(**kwargs)
+    elif policy_type == "acm2":
+        return ACM2Config(**kwargs)
+    elif policy_type == "acm2_sscp":
+        return ACM2SSCPConfig(**kwargs)
+    elif policy_type == "acm2_sscp_literal":
+        return ACM2SSCPLiteralConfig(**kwargs)
     elif policy_type == "act_sscp":
         return ACTSSCPConfig(**kwargs)
     elif policy_type == "mtil":
@@ -363,20 +363,20 @@ def make_pre_post_processors(
             dataset_stats=kwargs.get("dataset_stats"),
         )
 
-    # ACM3 family — most-derived subclass first, base last
-    # (ACM3SSCPLiteralConfig subclasses ACM3SSCPConfig → handled by the branch below)
-    elif isinstance(policy_cfg, ACM3SSCPConfig):
-        from lerobot.policies.acm3_sscp.processor_acm3_sscp import make_acm3_sscp_pre_post_processors
+    # ACM2 family — most-derived subclass first, base last
+    # (ACM2SSCPLiteralConfig subclasses ACM2SSCPConfig → handled by the branch below)
+    elif isinstance(policy_cfg, ACM2SSCPConfig):
+        from lerobot.policies.acm2_sscp.processor_acm2_sscp import make_acm2_sscp_pre_post_processors
 
-        processors = make_acm3_sscp_pre_post_processors(
+        processors = make_acm2_sscp_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )
 
-    elif isinstance(policy_cfg, ACM3Config):
-        from lerobot.policies.acm3.processor_acm3 import make_acm3_pre_post_processors
+    elif isinstance(policy_cfg, ACM2Config):
+        from lerobot.policies.acm2.processor_acm2 import make_acm2_pre_post_processors
 
-        processors = make_acm3_pre_post_processors(
+        processors = make_acm2_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )
