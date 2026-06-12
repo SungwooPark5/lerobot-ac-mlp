@@ -174,6 +174,20 @@ class RNNHistPolicy(PreTrainedPolicy):
              "lr": self.config.optimizer_lr_backbone},
         ]
 
+    def state_dict(self, *args, **kwargs):
+        # nn.LSTM/GRU pack weight_ih_l*/weight_hh_l*/bias_* into a single flattened
+        # buffer (_flat_weights), so those tensors SHARE one storage. safetensors
+        # (save_model, used by save_pretrained → checkpointing) refuses to serialize
+        # storage-sharing tensors ("no suitable name to keep ... None covers the entire
+        # storage"). Clone each tensor so it owns its storage. Save-time only; loading
+        # (load_state_dict) is unaffected. Without this, rnn_hist crashes at the first
+        # checkpoint save during training.
+        sd = super().state_dict(*args, **kwargs)
+        for k, v in list(sd.items()):
+            if isinstance(v, torch.Tensor):
+                sd[k] = v.clone()
+        return sd
+
     def reset(self):
         if self.config.temporal_ensemble_coeff is not None:
             self.temporal_ensembler.reset()
