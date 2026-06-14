@@ -45,10 +45,15 @@ class ChunkPairDataset(Dataset):
         base_dataset: Dataset,
         chunk_size: int,
         dataset_stats: dict[str, dict[str, Tensor]] | None = None,
+        load_n1_images: bool = True,
     ):
         self.base = base_dataset
         self.chunk_size = chunk_size
         self.dataset_stats = dataset_stats or {}
+        # v9 fix: include chunk n+1's OWN images (normalized to match the base keys).
+        # v8 left these out and the policy fell back to chunk_n's *stale* images, which
+        # starved the observation-driven boundary gate. Set False to reproduce v8.
+        self.load_n1_images = load_n1_images
         self.valid_indices = self._compute_valid_indices()
 
         logger.info(
@@ -129,9 +134,18 @@ class ChunkPairDataset(Dataset):
         if state_key in chunk_n1:
             result["obs_state_n1"] = self._normalize(chunk_n1[state_key], state_key)
 
-        # Images are NOT included for chunk_n1:
-        # The policy _forward_chunk_pair falls back to chunk_n's images automatically,
-        # which is an acceptable approximation for CC training.
+        # ── Images (v9 fix) ───────────────────────────────────────────────────
+        # v8 dropped chunk n+1's images and the policy fell back to chunk_n's STALE
+        # images — so the boundary correction never saw the *fresh* observation it is
+        # supposed to fuse (the gate's e_obs was effectively chunk_n). Load chunk n+1's
+        # own images, normalized with the SAME stats the preprocessor applies to the
+        # base image keys (ImageNet (3,1,1) when use_imagenet_stats — baked into
+        # dataset.meta.stats by datasets/factory.py), so chunk_n (preprocessor-norm)
+        # and the _n1 keys (normalized here) live in the same space.
+        if self.load_n1_images:
+            for key in chunk_n1:
+                if key.startswith("observation.images"):
+                    result[f"{key}_n1"] = self._normalize(chunk_n1[key], key)
 
         return result
 

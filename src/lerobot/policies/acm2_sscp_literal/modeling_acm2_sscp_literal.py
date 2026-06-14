@@ -176,6 +176,30 @@ def ema_states(new_states, prev_states, beta: float):
     return fused
 
 
+def add_carry_noise(states, std: float, p: float = 0.5):
+    """v9: perturb the carried ssm_state to simulate open-loop divergence (train only).
+
+    For each sample independently, with probability p, add Gaussian noise of per-sample
+    scale s ~ U(0, std) · std(ssm_state) to that sample's ssm_state. conv_state is left
+    untouched (the fusion only corrects ssm_state, so noising conv would inject error the
+    gate cannot fix). States are detached on the way in, so this never affects chunk-n
+    gradients. This manufactures the carry↔observation disagreement the obs-driven gate
+    needs to learn to correct; with prob (1-p) the carry is clean so memory is still
+    rewarded. No-op when std <= 0.
+    """
+    if states is None or std <= 0.0:
+        return states
+    out = []
+    for conv, ssm in states:
+        b = ssm.shape[0]
+        apply = (torch.rand(b, device=ssm.device) < p).to(ssm.dtype)            # (B,)
+        scale = torch.rand(b, device=ssm.device).to(ssm.dtype) * std * apply    # (B,)
+        ref = ssm.reshape(b, -1).std(dim=1).clamp_min(1e-6).to(ssm.dtype)       # (B,)
+        coeff = (scale * ref).view(b, *([1] * (ssm.dim() - 1)))
+        out.append((conv, ssm + torch.randn_like(ssm) * coeff))
+    return out
+
+
 class CarryStateFusion(nn.Module):
     """Boundary-time fusion of the carried per-layer ssm_state ("mlp" / "gated").
 
@@ -449,6 +473,13 @@ class ACM2SSCPLiteralPolicy(PreTrainedPolicy):
         loss_n, loss_dict_n, states_n = self._forward_single(batch_n, carry=None)
 
         carry = detach_states(states_n) if self.config.sscp_detach else states_n
+        # v9: inject carry-divergence noise so the boundary fusion (esp. the obs-driven
+        # gate) learns to *correct* a carried state that disagrees with the fresh
+        # observation. Applied before fusion so every mode sees the same dirtied carry.
+        # No-op when carry_noise_std == 0 (v8 behavior). Train-only (forward path).
+        if getattr(self.config, "carry_noise_std", 0.0) > 0.0:
+            carry = add_carry_noise(carry, self.config.carry_noise_std,
+                                    getattr(self.config, "carry_noise_p", 0.5))
         if self.config.carry_fusion == "ema":
             # First boundary of the pair: c = beta * h (c_{-1} = 0), matching inference.
             carry = ema_states(carry, None, self.config.carry_ema_beta)

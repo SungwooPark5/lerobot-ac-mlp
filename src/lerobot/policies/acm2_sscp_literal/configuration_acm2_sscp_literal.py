@@ -54,7 +54,23 @@ class ACM2SSCPLiteralConfig(ACM2SSCPConfig):
 
     # "gated": initial bias of the gate logits. sigma(-4) ~= 0.018, so training
     # starts as (almost) literal carry and the gate opens only if useful.
+    # v9 note: with carry-noise augmentation supplying a learning signal, a less
+    # negative bias (e.g. -2.0, sigma ~= 0.12) lets the gate actually move.
     carry_gate_bias_init: float = -4.0
+
+    # ── v9: carry-divergence augmentation (teach the boundary fusion to correct) ──
+    # The v8 failure: at training the carried state was always *clean* (single
+    # teacher-forced boundary) so the obs-driven gate had no reason to open and stayed
+    # shut — but at eval the state drifts over many open-loop boundaries, so the shut
+    # gate passed a corrupted state through and SR collapsed. Fix: at training, with
+    # probability carry_noise_p, perturb the detached carried ssm_state by Gaussian
+    # noise of per-sample scale ~ U(0, carry_noise_std) · std(ssm_state). Combined with
+    # fresh chunk-n+1 observations (ChunkPairDataset.load_n1_images), this manufactures
+    # the carry↔observation disagreement the gate must learn to correct. Applied to the
+    # whole literal family so training is identical and only carry_fusion differs (clean
+    # controlled comparison). 0.0 = v8 behavior (no augmentation).
+    carry_noise_std: float = 0.0
+    carry_noise_p: float = 0.5
 
     def __post_init__(self):
         super().__post_init__()
