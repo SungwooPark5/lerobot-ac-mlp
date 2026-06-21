@@ -29,6 +29,7 @@ from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.acm2_sscp.configuration_acm2_sscp import ACM2SSCPConfig
 
 CARRY_FUSION_MODES = ("none", "ema", "mlp", "gated")
+CARRY_GATE_MODES = ("reset", "replace", "residual")
 
 
 @PreTrainedConfig.register_subclass("acm2_sscp_literal")
@@ -72,9 +73,22 @@ class ACM2SSCPLiteralConfig(ACM2SSCPConfig):
     carry_noise_std: float = 0.0
     carry_noise_p: float = 0.5
 
+    # "gated" sub-mode (v10 ablation axis). The decoder ALWAYS scans the fresh observation
+    # (encoder_out) with the carry as the initial state, so:
+    #   "reset"    h' = (1-G)·h              — gate the carry toward 0 (=ACT): discard a bad
+    #                                           carry and let the fresh obs drive. Robust + parity.
+    #   "replace"  h' = (1-G)·h + G·S(e_obs)  — Kalman-style correct toward an obs-derived target.
+    #   "residual" h' = h + G·Δ(e_obs)        — additive obs correction (never discards h).
+    # Default "replace" keeps v9 (gated=replace) checkpoints loadable; v10 main uses "reset".
+    carry_gate_mode: str = "replace"
+
     def __post_init__(self):
         super().__post_init__()
         if self.carry_fusion not in CARRY_FUSION_MODES:
             raise ValueError(
                 f"carry_fusion must be one of {CARRY_FUSION_MODES}, got '{self.carry_fusion}'."
+            )
+        if self.carry_gate_mode not in CARRY_GATE_MODES:
+            raise ValueError(
+                f"carry_gate_mode must be one of {CARRY_GATE_MODES}, got '{self.carry_gate_mode}'."
             )

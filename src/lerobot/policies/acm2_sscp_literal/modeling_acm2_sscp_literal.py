@@ -211,13 +211,18 @@ class CarryStateFusion(nn.Module):
 
     mlp   — h' = h + MLP(h), residual with zero-init output layer (starts as literal
             carry). No observation input: AVA-VLA's plain recurrent-state projection.
-    gated — h' = (1 - G) ⊙ h + G ⊙ S(e_obs), the proposed PEC correction.
-            G = σ(g([mean_{H,P}(h); e_obs]) + b₀) ∈ R^N, broadcast over H,P.
+    gated — observation-driven boundary correction. G = σ(g([mean_{H,P}(h); e_obs]) + b₀) ∈ R^N,
+            broadcast over H,P. `carry_gate_mode` selects how the gate corrects:
+              reset    h' = (1-G)⊙h              discard a bad carry (→ ACT; fresh obs drives
+                                                 via the decoder's encoder_out). v10 main.
+              replace  h' = (1-G)⊙h + G⊙S(e_obs) Kalman-style correct toward an obs target.
+              residual h' = h + G⊙Δ(e_obs)        additive obs correction (never discards h).
     """
 
     def __init__(self, config: ACM2SSCPLiteralConfig):
         super().__init__()
         self.mode = config.carry_fusion
+        self.gate_mode = getattr(config, "carry_gate_mode", "replace")  # reset|replace|residual
         d_inner = config.dim_model * config.mamba2_expand
         self.nheads = d_inner // config.mamba2_headdim
         self.d_state = config.mamba2_d_state
@@ -244,13 +249,15 @@ class CarryStateFusion(nn.Module):
                 nn.init.zeros_(out.weight)
                 nn.init.constant_(out.bias, config.carry_gate_bias_init)
                 return nn.Sequential(nn.Linear(N + D, hidden), nn.SiLU(), out)
-            def make_target():
-                s = nn.Linear(D, N)                 # obs → per-channel target, broadcast over H,P
-                nn.init.zeros_(s.weight)
-                nn.init.zeros_(s.bias)
-                return s
             self.gate = nn.ModuleList([make_gate() for _ in range(n_layers)])
-            self.target = nn.ModuleList([make_target() for _ in range(n_layers)])
+            if self.gate_mode in ("replace", "residual"):
+                def make_target():
+                    s = nn.Linear(D, N)             # obs → per-channel target/Δ, broadcast over H,P
+                    nn.init.zeros_(s.weight)
+                    nn.init.zeros_(s.bias)
+                    return s
+                self.target = nn.ModuleList([make_target() for _ in range(n_layers)])
+            # "reset" needs no target module (h' = (1-G)·h)
         else:
             raise ValueError(f"CarryStateFusion supports 'mlp'/'gated', got '{self.mode}'.")
 
@@ -270,8 +277,14 @@ class CarryStateFusion(nn.Module):
                 pooled = ssm_in.mean(dim=(1, 2))                          # (B, N)
                 gate = torch.sigmoid(self.gate[i](torch.cat([pooled, e_obs], dim=-1)))
                 gate = gate.view(b, 1, 1, n)                              # broadcast over H, P
-                target = self.target[i](e_obs).view(b, 1, 1, n)          # broadcast over H, P
-                ssm_out = (1.0 - gate) * ssm_in + gate * target
+                if self.gate_mode == "reset":
+                    ssm_out = (1.0 - gate) * ssm_in                       # gate toward 0 (= ACT)
+                elif self.gate_mode == "residual":
+                    delta = self.target[i](e_obs).view(b, 1, 1, n)
+                    ssm_out = ssm_in + gate * delta                       # additive obs correction
+                else:  # replace
+                    target = self.target[i](e_obs).view(b, 1, 1, n)
+                    ssm_out = (1.0 - gate) * ssm_in + gate * target       # Kalman-style replace
                 if self.record_gate:
                     gate_log.append(float(gate.mean().item()))
             fused.append((conv, ssm_out.to(ssm.dtype)))
