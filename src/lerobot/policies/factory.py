@@ -32,8 +32,12 @@ from lerobot.envs.utils import env_to_policy_features
 from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act_sscp.configuration_act_sscp import ACTSSCPConfig
 from lerobot.policies.acm2.configuration_acm2 import ACM2Config
+from lerobot.policies.acm2_icpe.configuration_acm2_icpe import ACM2ICPEConfig
 from lerobot.policies.acm2_sscp.configuration_acm2_sscp import ACM2SSCPConfig
 from lerobot.policies.acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig
+from lerobot.policies.acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_bimamba import (
+    ACM2SSCPLiteralBiMambaConfig,
+)
 from lerobot.policies.mtil.configuration_mtil import MTILConfig
 from lerobot.policies.rnn_hist.configuration_rnn_hist import RNNHistConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
@@ -93,6 +97,11 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
 
         return ACM2Policy
 
+    elif name == "acm2_icpe":
+        from lerobot.policies.acm2_icpe.modeling_acm2_icpe import ACM2ICPEPolicy
+
+        return ACM2ICPEPolicy
+
     elif name == "acm2_sscp":
         from lerobot.policies.acm2_sscp.modeling_acm2_sscp import ACM2SSCPPolicy
 
@@ -102,6 +111,13 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.acm2_sscp_literal.modeling_acm2_sscp_literal import ACM2SSCPLiteralPolicy
 
         return ACM2SSCPLiteralPolicy
+
+    elif name == "acm2_sscp_literal_bimamba":
+        from lerobot.policies.acm2_sscp_literal_bimamba.modeling_acm2_sscp_literal_bimamba import (
+            ACM2SSCPLiteralBiMambaPolicy,
+        )
+
+        return ACM2SSCPLiteralBiMambaPolicy
 
     elif name == "act_sscp":
         from lerobot.policies.act_sscp.modeling_act_sscp import ACTSSCPPolicy
@@ -184,10 +200,14 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACTConfig(**kwargs)
     elif policy_type == "acm2":
         return ACM2Config(**kwargs)
+    elif policy_type == "acm2_icpe":
+        return ACM2ICPEConfig(**kwargs)
     elif policy_type == "acm2_sscp":
         return ACM2SSCPConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal":
         return ACM2SSCPLiteralConfig(**kwargs)
+    elif policy_type == "acm2_sscp_literal_bimamba":
+        return ACM2SSCPLiteralBiMambaConfig(**kwargs)
     elif policy_type == "act_sscp":
         return ACTSSCPConfig(**kwargs)
     elif policy_type == "mtil":
@@ -369,6 +389,14 @@ def make_pre_post_processors(
         from lerobot.policies.acm2_sscp.processor_acm2_sscp import make_acm2_sscp_pre_post_processors
 
         processors = make_acm2_sscp_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACM2ICPEConfig):
+        from lerobot.policies.acm2_icpe.processor_acm2_icpe import make_acm2_icpe_pre_post_processors
+
+        processors = make_acm2_icpe_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

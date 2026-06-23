@@ -16,6 +16,7 @@
 from .act.configuration_act import ACTConfig as ACTConfig
 from .act_sscp.configuration_act_sscp import ACTSSCPConfig as ACTSSCPConfig
 from .acm2.configuration_acm2 import ACM2Config as ACM2Config
+from .acm2_icpe.configuration_acm2_icpe import ACM2ICPEConfig as ACM2ICPEConfig
 from .acm2_sscp.configuration_acm2_sscp import ACM2SSCPConfig as ACM2SSCPConfig
 from .acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig as ACM2SSCPLiteralConfig
 from .mtil.configuration_mtil import MTILConfig as MTILConfig
@@ -34,6 +35,7 @@ __all__ = [
     "ACTConfig",
     "ACTSSCPConfig",
     "ACM2Config",
+    "ACM2ICPEConfig",
     "ACM2SSCPConfig",
     "ACM2SSCPLiteralConfig",
     "MTILConfig",
