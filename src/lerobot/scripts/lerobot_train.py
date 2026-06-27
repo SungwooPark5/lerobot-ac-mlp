@@ -284,15 +284,23 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             raise ValueError(
                 "use_chunk_pairs=True requires policy.chunk_size to be set."
             )
+        # v13 Phase R: reactive-consistency training needs mid-chunk offset observations.
+        reactive_offsets = (
+            getattr(cfg.policy, "reactive_train_offsets", 0)
+            if getattr(cfg.policy, "reactive_train", False)
+            else 0
+        )
         dataset = ChunkPairDataset(
             base_dataset=dataset,
             chunk_size=chunk_size,
             dataset_stats=dataset.meta.stats,
+            reactive_offsets=reactive_offsets,
         )
         if is_main_process:
             logging.info(
                 f"ChunkPairDataset active: {len(dataset)} pairs "
-                f"(chunk_size={chunk_size}, sscp_p_carry={getattr(cfg.policy, 'sscp_p_carry', 'N/A')})"
+                f"(chunk_size={chunk_size}, sscp_p_carry={getattr(cfg.policy, 'sscp_p_carry', 'N/A')}, "
+                f"reactive_offsets={reactive_offsets})"
             )
 
     # create dataloader for offline training
