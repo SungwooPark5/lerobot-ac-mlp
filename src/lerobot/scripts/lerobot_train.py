@@ -369,10 +369,24 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if is_main_process:
         logging.info("Start offline training on a fixed dataset")
 
+    # v13 reactive: the preprocessor's batch↔transition round-trip keeps only standard
+    # observation/action/_is_pad keys and DROPS custom keys. ReactiveSegmentDataset's
+    # step{j}_* keys are already normalized by the dataset, so pull them out before the
+    # preprocessor and restore them (on the preprocessed batch's device) afterwards.
+    _reactive_seg = bool(getattr(cfg.policy, "reactive_train", False))
+
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
+        seg_keys = (
+            {k: batch.pop(k) for k in list(batch) if k.startswith("step")}
+            if _reactive_seg else {}
+        )
         batch = preprocessor(batch)
+        if seg_keys:
+            _dev = next((v.device for v in batch.values() if torch.is_tensor(v)), None)
+            for k, v in seg_keys.items():
+                batch[k] = v.to(_dev) if (torch.is_tensor(v) and _dev is not None) else v
         train_tracker.dataloading_s = time.perf_counter() - start_time
 
         train_tracker, output_dict = update_policy(
