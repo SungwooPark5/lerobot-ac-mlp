@@ -369,23 +369,30 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if is_main_process:
         logging.info("Start offline training on a fixed dataset")
 
-    # v13 reactive: the preprocessor's batch↔transition round-trip keeps only standard
-    # observation/action/_is_pad keys and DROPS custom keys. ReactiveSegmentDataset's
-    # step{j}_* keys are already normalized by the dataset, so pull them out before the
-    # preprocessor and restore them (on the preprocessed batch's device) afterwards.
-    _reactive_seg = bool(getattr(cfg.policy, "reactive_train", False))
+    # The preprocessor's batch↔transition round-trip keeps only standard
+    # observation/action/_is_pad keys and DROPS custom keys. Chunk-continuation datasets
+    # already normalize their extra keys themselves, so pull them out before the preprocessor
+    # and restore them (on the preprocessed batch's device) afterwards. Covers:
+    #   • ChunkPairDataset    → "*_n1"   (chunk n+1 obs/action for boundary/carry losses)
+    #   • ReactiveSegmentDataset → "step{j}_*"
+    # Without this, "action_n1" never reaches forward() → the policy silently falls back to
+    # single-chunk training (e.g. acm2_smooth would skip the boundary-continuity loss).
+    _preserve_carry = bool(getattr(cfg, "use_chunk_pairs", False))
+
+    def _is_carry_key(k):
+        return k.startswith("step") or k.endswith("_n1")
 
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
-        seg_keys = (
-            {k: batch.pop(k) for k in list(batch) if k.startswith("step")}
-            if _reactive_seg else {}
+        carry_keys = (
+            {k: batch.pop(k) for k in list(batch) if _is_carry_key(k)}
+            if _preserve_carry else {}
         )
         batch = preprocessor(batch)
-        if seg_keys:
+        if carry_keys:
             _dev = next((v.device for v in batch.values() if torch.is_tensor(v)), None)
-            for k, v in seg_keys.items():
+            for k, v in carry_keys.items():
                 batch[k] = v.to(_dev) if (torch.is_tensor(v) and _dev is not None) else v
         train_tracker.dataloading_s = time.perf_counter() - start_time
 
