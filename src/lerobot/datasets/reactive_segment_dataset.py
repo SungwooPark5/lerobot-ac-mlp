@@ -109,6 +109,16 @@ class ReactiveSegmentDataset(Dataset):
         for c in range(self.M):
             for o in self.in_chunk:
                 frame = self.base[i + c * self.K + o]
+                if j == 0:
+                    # Pipeline pass-through: lerobot's preprocessor (ObservationProcessorStep /
+                    # device move / batch_to_transition) requires the STANDARD observation+action
+                    # keys. Ship the first decode point's raw frame under its standard keys (the
+                    # preprocessor normalizes + moves them). forward() uses ONLY the step{j}_ keys,
+                    # which this dataset already normalized — so these standard keys are pass-through
+                    # only (same pattern as ChunkPairDataset's dict(chunk_n)).
+                    for k, v in frame.items():
+                        if k.startswith("observation.") or k in ("action", "action_is_pad"):
+                            result[k] = v
                 result[f"step{j}_action"] = self._normalize(frame["action"], "action")
                 result[f"step{j}_action_is_pad"] = (
                     frame["action_is_pad"] if "action_is_pad" in frame
