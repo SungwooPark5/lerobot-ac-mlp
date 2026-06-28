@@ -39,6 +39,7 @@ from lerobot.policies.acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_
     ACM2SSCPLiteralBiMambaConfig,
 )
 from lerobot.policies.acm2_reactive.configuration_acm2_reactive import ACM2ReactiveConfig
+from lerobot.policies.acm2_smooth.configuration_acm2_smooth import ACM2SmoothConfig
 from lerobot.policies.mtil.configuration_mtil import MTILConfig
 from lerobot.policies.rnn_hist.configuration_rnn_hist import RNNHistConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
@@ -124,6 +125,11 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.acm2_reactive.modeling_acm2_reactive import ACM2ReactivePolicy
 
         return ACM2ReactivePolicy
+
+    elif name == "acm2_smooth":
+        from lerobot.policies.acm2_smooth.modeling_acm2_smooth import ACM2SmoothPolicy
+
+        return ACM2SmoothPolicy
 
     elif name == "act_sscp":
         from lerobot.policies.act_sscp.modeling_act_sscp import ACTSSCPPolicy
@@ -216,6 +222,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACM2SSCPLiteralBiMambaConfig(**kwargs)
     elif policy_type == "acm2_reactive":
         return ACM2ReactiveConfig(**kwargs)
+    elif policy_type == "acm2_smooth":
+        return ACM2SmoothConfig(**kwargs)
     elif policy_type == "act_sscp":
         return ACTSSCPConfig(**kwargs)
     elif policy_type == "mtil":
