@@ -28,23 +28,6 @@ from torch.utils.data import Dataset
 logger = logging.getLogger(__name__)
 
 
-def _fixed_offsets(chunk_size: int, n: int) -> list[int]:
-    """`n` deterministic offsets evenly spaced in [1, chunk_size-1] (dedup, sorted).
-
-    Deterministic (not random) so every sample emits the SAME offset keys → the default
-    collate can stack the batch. n<=0 → no offsets (v9 behavior).
-    """
-    if n <= 0 or chunk_size < 2:
-        return []
-    offs: list[int] = []
-    for k in range(n):
-        d = round((k + 1) * chunk_size / (n + 1))
-        d = max(1, min(chunk_size - 1, d))
-        if d not in offs:
-            offs.append(d)
-    return sorted(offs)
-
-
 class ChunkPairDataset(Dataset):
     """Wraps a LeRobotDataset to return consecutive chunk pairs for SSCP CC training.
 
@@ -63,7 +46,6 @@ class ChunkPairDataset(Dataset):
         chunk_size: int,
         dataset_stats: dict[str, dict[str, Tensor]] | None = None,
         load_n1_images: bool = True,
-        reactive_offsets: int = 0,
     ):
         self.base = base_dataset
         self.chunk_size = chunk_size
@@ -72,13 +54,6 @@ class ChunkPairDataset(Dataset):
         # v8 left these out and the policy fell back to chunk_n's *stale* images, which
         # starved the observation-driven boundary gate. Set False to reproduce v8.
         self.load_n1_images = load_n1_images
-        # v13 Phase R (reactive-consistency training): also emit observations + action
-        # targets at fixed mid-chunk offsets within chunk n+1, so the policy can supervise
-        # per-step re-plans decoded from the carried state (train == reactive inference).
-        # FIXED offsets (not random) keep batch keys consistent across samples for collation.
-        # 0 = off (zero effect → identical to v9 behavior).
-        self.reactive_offsets = int(reactive_offsets)
-        self.offsets = _fixed_offsets(chunk_size, self.reactive_offsets)
         self.valid_indices = self._compute_valid_indices()
 
         logger.info(
@@ -89,13 +64,11 @@ class ChunkPairDataset(Dataset):
     # ── Index computation ──────────────────────────────────────────────────────
 
     def _compute_valid_indices(self) -> list[int]:
-        """Identify frame indices where chunk n+1 (and any reactive offsets) stay in-episode.
+        """Identify frame indices where i + chunk_size stays within the same episode.
 
-        Uses episode metadata directly — no data loading required. With reactive_offsets the
-        deepest offset observation is at i + chunk_size + max(offsets), so an extra chunk of
-        margin is required (the offset action chunks themselves may be padded at the tail).
+        Uses episode metadata directly — no data loading required.
         """
-        margin = self.chunk_size + (max(self.offsets) if self.offsets else 0)
+        margin = self.chunk_size
         valid: list[int] = []
         for ep in self.base.meta.episodes:
             ep_start: int = int(ep["dataset_from_index"])
@@ -174,28 +147,6 @@ class ChunkPairDataset(Dataset):
             for key in chunk_n1:
                 if key.startswith("observation.images"):
                     result[f"{key}_n1"] = self._normalize(chunk_n1[key], key)
-
-        # ── Reactive mid-chunk offsets (v13 Phase R) ─────────────────────────────
-        # For each fixed offset d, emit the observation + action chunk starting d steps
-        # into chunk n+1, so the policy can supervise a re-plan decoded from the carried
-        # state with a fresh (offset) observation. Keys: action_o{d}, action_is_pad_o{d},
-        # obs_state_o{d}, obs_env_state_o{d}, observation.images.*_o{d}.
-        for d in self.offsets:
-            frame = self.base[i + self.chunk_size + d]
-            result[f"action_o{d}"] = self._normalize(frame["action"], "action")
-            result[f"action_is_pad_o{d}"] = (
-                frame["action_is_pad"]
-                if "action_is_pad" in frame
-                else torch.zeros(self.chunk_size, dtype=torch.bool)
-            )
-            if env_state_key in frame:
-                result[f"obs_env_state_o{d}"] = self._normalize(frame[env_state_key], env_state_key)
-            if state_key in frame:
-                result[f"obs_state_o{d}"] = self._normalize(frame[state_key], state_key)
-            if self.load_n1_images:
-                for key in frame:
-                    if key.startswith("observation.images"):
-                        result[f"{key}_o{d}"] = self._normalize(frame[key], key)
 
         return result
 

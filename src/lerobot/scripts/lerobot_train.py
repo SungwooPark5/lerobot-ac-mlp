@@ -274,34 +274,44 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
-    # Wrap dataset with ChunkPairDataset for SSCP chunk-continuation (CC) training.
-    # Only active when cfg.use_chunk_pairs=True; has zero effect on standard training.
+    # Wrap dataset for chunk-continuation training. use_chunk_pairs=True selects:
+    #   • reactive_train=True  → ReactiveSegmentDataset (v13 reactive-consistency rollout)
+    #   • else                 → ChunkPairDataset (SSCP carry, m2_* family)
+    # Has zero effect on standard training (use_chunk_pairs=False).
     if cfg.use_chunk_pairs:
-        from lerobot.datasets.chunk_pair_dataset import ChunkPairDataset
-
         chunk_size = getattr(cfg.policy, "chunk_size", None)
         if chunk_size is None:
-            raise ValueError(
-                "use_chunk_pairs=True requires policy.chunk_size to be set."
+            raise ValueError("use_chunk_pairs=True requires policy.chunk_size to be set.")
+
+        if getattr(cfg.policy, "reactive_train", False):
+            from lerobot.datasets.reactive_segment_dataset import ReactiveSegmentDataset
+
+            dataset = ReactiveSegmentDataset(
+                base_dataset=dataset,
+                chunk_size=chunk_size,
+                n_chunks=getattr(cfg.policy, "reactive_train_chunks", 2),
+                n_samples=getattr(cfg.policy, "reactive_train_samples", 3),
+                dataset_stats=dataset.meta.stats,
             )
-        # v13 Phase R: reactive-consistency training needs mid-chunk offset observations.
-        reactive_offsets = (
-            getattr(cfg.policy, "reactive_train_offsets", 0)
-            if getattr(cfg.policy, "reactive_train", False)
-            else 0
-        )
-        dataset = ChunkPairDataset(
-            base_dataset=dataset,
-            chunk_size=chunk_size,
-            dataset_stats=dataset.meta.stats,
-            reactive_offsets=reactive_offsets,
-        )
-        if is_main_process:
-            logging.info(
-                f"ChunkPairDataset active: {len(dataset)} pairs "
-                f"(chunk_size={chunk_size}, sscp_p_carry={getattr(cfg.policy, 'sscp_p_carry', 'N/A')}, "
-                f"reactive_offsets={reactive_offsets})"
+            if is_main_process:
+                logging.info(
+                    f"ReactiveSegmentDataset active: {len(dataset)} segments "
+                    f"(K={chunk_size}, chunks={getattr(cfg.policy, 'reactive_train_chunks', 2)}, "
+                    f"samples={getattr(cfg.policy, 'reactive_train_samples', 3)})"
+                )
+        else:
+            from lerobot.datasets.chunk_pair_dataset import ChunkPairDataset
+
+            dataset = ChunkPairDataset(
+                base_dataset=dataset,
+                chunk_size=chunk_size,
+                dataset_stats=dataset.meta.stats,
             )
+            if is_main_process:
+                logging.info(
+                    f"ChunkPairDataset active: {len(dataset)} pairs "
+                    f"(chunk_size={chunk_size}, sscp_p_carry={getattr(cfg.policy, 'sscp_p_carry', 'N/A')})"
+                )
 
     # create dataloader for offline training
     if hasattr(cfg.policy, "drop_n_last_frames"):
