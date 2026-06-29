@@ -299,6 +299,25 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     f"(K={chunk_size}, chunks={getattr(cfg.policy, 'reactive_train_chunks', 2)}, "
                     f"samples={getattr(cfg.policy, 'reactive_train_samples', 3)})"
                 )
+        elif int(getattr(cfg.policy, "carry_train_chunks", 0) or 0) > 2:
+            # acm2_smooth multi-chunk carry rollout: reuse ReactiveSegmentDataset to ship M
+            # consecutive chunks (boundary-only → n_samples=0) so training matches the carry
+            # depth the policy accumulates over a full episode at inference.
+            from lerobot.datasets.reactive_segment_dataset import ReactiveSegmentDataset
+
+            seq_chunks = int(cfg.policy.carry_train_chunks)
+            dataset = ReactiveSegmentDataset(
+                base_dataset=dataset,
+                chunk_size=chunk_size,
+                n_chunks=seq_chunks,
+                n_samples=0,
+                dataset_stats=dataset.meta.stats,
+            )
+            if is_main_process:
+                logging.info(
+                    f"ReactiveSegmentDataset (smooth carry, boundary-only) active: "
+                    f"{len(dataset)} segments (chunk_size={chunk_size}, carry_train_chunks={seq_chunks})"
+                )
         else:
             from lerobot.datasets.chunk_pair_dataset import ChunkPairDataset
 

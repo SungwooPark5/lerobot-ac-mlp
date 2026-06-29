@@ -264,9 +264,15 @@ class ACM2SmoothPolicy(ACM2Policy):
 
     # ── Training ─────────────────────────────────────────────────────────────────
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
-        if self.config.image_features:
+        # Multi-chunk carry rollout (train == inference carry depth). Triggered when the
+        # ReactiveSegmentDataset(n_samples=0) ships M consecutive chunks under step{j}_ keys.
+        n_seq = int(getattr(self.config, "carry_train_chunks", 2) or 2)
+        use_seq = self.config.carry_enabled and n_seq > 2 and "step0_action" in batch
+        if self.config.image_features and not use_seq:
             batch = dict(batch)
             batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features]
+        if use_seq:
+            return self._forward_smooth_seq(batch, n_seq)
         has_pairs = "action_n1" in batch
         if self.config.carry_enabled and self.config.carry_p > 0.0 and has_pairs:
             return self._forward_smooth_pair(batch)
@@ -328,6 +334,74 @@ class ACM2SmoothPolicy(ACM2Policy):
               "boundary_loss": float(bc.detach()), "jerk_loss": float((jerk / 2).detach())}
         if cfg.use_vae:
             kld = (kld_n + kld_n1) / 2
+            loss = loss + kld * cfg.kl_weight
+            ld["kld_loss"] = float(kld.detach())
+        ld["loss"] = float(loss.detach())
+        return loss, ld
+
+    # ── Multi-chunk carry rollout (train == inference) ────────────────────────────
+    def _build_step_batch(self, batch: dict, j: int) -> dict | None:
+        """Reconstruct chunk j's standard batch from the dataset's `step{j}_` keys.
+
+        ReactiveSegmentDataset(n_samples=0) ships, per consecutive chunk j, the GT action
+        chunk + that boundary's observation (all normalized to the preprocessed space).
+        """
+        cfg = self.config
+        if f"step{j}_action" not in batch:
+            return None
+        out: dict = {ACTION: batch[f"step{j}_action"],
+                     "action_is_pad": batch[f"step{j}_action_is_pad"]}
+        sk = batch.get(f"step{j}_{OBS_STATE}")
+        if sk is not None:
+            out[OBS_STATE] = sk
+        ek = batch.get(f"step{j}_{OBS_ENV_STATE}")
+        if ek is not None:
+            out[OBS_ENV_STATE] = ek
+        if cfg.image_features:
+            imgs = [batch[f"step{j}_{key}"] for key in cfg.image_features
+                    if f"step{j}_{key}" in batch]
+            if imgs:
+                out[OBS_IMAGES] = imgs
+        return out
+
+    def _forward_smooth_seq(self, batch: dict, n_chunks: int):
+        """Roll the recurrent carry through M consecutive chunks, detaching at each boundary.
+
+        This reproduces inference exactly: chunk 0 starts from a zero carry, chunk j>0 starts
+        from the (detached) forward-scan state committed by chunk j-1 — so the model is trained
+        on the SAME accumulated-carry distribution (depth 0..M-1) it meets at eval time, instead
+        of only the single n→n+1 hop that ChunkPairDataset exposes.
+        """
+        cfg = self.config
+        carry = None
+        prev_actions = None
+        l1s, jerks, klds, bcs = [], [], [], []
+        for j in range(n_chunks):
+            batch_j = self._build_step_batch(batch, j)
+            if batch_j is None:
+                break
+            l1_j, jerk_j, kld_j, actions_j, states_j = self._chunk_losses(batch_j, carry=carry)
+            l1s.append(l1_j)
+            jerks.append(jerk_j)
+            klds.append(kld_j)
+            if prev_actions is not None and cfg.smooth_boundary_weight > 0:
+                bcs.append(_boundary_continuity(prev_actions, actions_j,
+                                                batch_j["action_is_pad"], cfg.smooth_boundary_velocity))
+            # Pure boundary handoff: detach so each chunk's graph stays shallow (truncated BPTT).
+            carry = detach_states(states_j) if cfg.carry_detach else states_j
+            prev_actions = actions_j
+
+        l1 = torch.stack(l1s).mean()
+        jerk = torch.stack(jerks).mean()
+        loss = l1 + cfg.smooth_jerk_weight * jerk
+        ld = {"l1_loss": float(l1.detach()), "jerk_loss": float(jerk.detach()),
+              "n_chunks": float(len(l1s))}
+        if bcs:
+            bc = torch.stack(bcs).mean()
+            loss = loss + cfg.smooth_boundary_weight * bc
+            ld["boundary_loss"] = float(bc.detach())
+        if cfg.use_vae:
+            kld = torch.stack(klds).mean()
             loss = loss + kld * cfg.kl_weight
             ld["kld_loss"] = float(kld.detach())
         ld["loss"] = float(loss.detach())

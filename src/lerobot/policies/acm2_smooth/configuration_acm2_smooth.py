@@ -35,6 +35,12 @@ class ACM2SmoothConfig(ACM2Config):
     carry_enabled: bool = True            # False → acm2 zero-carry (carry ablation)
     carry_p: float = 0.5                  # chunk-pair 학습 확률 (boundary loss용 연속 청크쌍)
     carry_detach: bool = True             # 경계에서 carry detach (truncated BPTT)
+    # 학습 carry 깊이. 2 → chunk-pair(=carry 1 hop). 추론은 한 에피소드에서 carry를
+    # 에피소드 길이/K 만큼(≈4) 누적하므로, 2로 학습하면 청크 3+가 분포 밖(OOD)으로 drift.
+    # M>2 → M개 연속 청크를 hop마다 detach-carry로 롤아웃해 추론의 carry 깊이 분포를 학습.
+    # (M=ep_len/K 권장; ALOHA ~400스텝/K100 → 4. K가 커서 M개 청크가 에피소드를 넘으면
+    #  ReactiveSegmentDataset가 유효 세그먼트를 못 만들 수 있으니 데이터 길이에 맞게.)
+    carry_train_chunks: int = 2
 
     # ── smoothness 손실 (boundary-continuity + jerk) ─────────────────────────────
     smooth_boundary_weight: float = 0.1   # 경계 위치(+속도) 매칭. 0 → off
@@ -53,3 +59,5 @@ class ACM2SmoothConfig(ACM2Config):
             raise ValueError(f"smooth_jerk_mode must be one of {SMOOTH_JERK_MODES}, got '{self.smooth_jerk_mode}'.")
         if self.smooth_boundary_weight < 0 or self.smooth_jerk_weight < 0:
             raise ValueError("smooth_boundary_weight / smooth_jerk_weight must be >= 0.")
+        if self.carry_train_chunks < 2:
+            raise ValueError("carry_train_chunks must be >= 2 (2 == chunk-pair).")
