@@ -103,6 +103,19 @@ Insertion is 84% even in their best config; with 10-step history MTIL ≈ ACT (9
   is the SSM scan chunk, not the action chunk — "chunk_size" is overloaded in their code.
 - **Optimizer**: AdamW + CosineAnnealingLR. train.py LR=2e-4/wd=5e-4; train_par.py LR=1e-4/wd=1e-4.
 - **Eval**: closed-loop per-step (query_frequency=1, env.step every t over 400 steps) + temporal ensemble.
+- **Training budget (epochs)**: paper states **50 epochs** *for LIBERO only* ("results
+  averaged over 3 seeds (100, 200, 300) at 50 epochs"; verified ar5iv 2026-06-22). The
+  ACT-sim (Cube Transfer / Insertion) epoch count is **not stated** in the paper.
+  ⚠️ Do NOT frame "few epochs" as a weakness in the paper/rebuttal: (1) 50 ep is the
+  LIBERO benchmark's standard protocol (used for fair baseline comparison), (2) epoch is a
+  different unit from our gradient steps (`STEPS=150_000`) — not directly comparable, and
+  (3) action-chunk dense supervision + frozen DINOv2 + scripted demos make BC converge in
+  few epochs. **Unit conversion** (per-frame windowed sampling, both pipelines):
+  `steps ≈ epochs × (n_demos × ep_len) / batch`. On OUR data (50 demos × ~400 frames,
+  batch 8): 1 epoch ≈ 2,500 steps → 50 epochs ≈ **~125k steps ≈ our 150k** (same order;
+  ours slightly larger). Caveat: the 50-ep figure is LIBERO data (not ALOHA), so this is an
+  order-of-magnitude equivalence, not an exact match. The real fairness axes are
+  vision/demos/capacity, NOT the epoch number.
 
 ### Standard ACT/ALOHA practice (= what WE use) — CONFIRMED 3-0
 - **50 demonstrations/task** (both scripted and human variants), ResNet18 backbone,
