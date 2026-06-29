@@ -312,11 +312,30 @@ class ACM2SmoothPolicy(ACM2Policy):
             kld = (-0.5 * (1 + log_sigma_x2 - mu.pow(2) - log_sigma_x2.exp())).sum(-1).mean()
         return l1, jerk, kld, actions, new_states
 
+    def _smooth_dims(self, x: Tensor) -> Tensor:
+        """A-fix: drop action dims excluded from the smoothness losses (e.g. gripper dims that
+        must move sharply to grasp). Slices the last (action) axis only. No-op when empty."""
+        ex = self.config.smooth_exclude_dims
+        if not ex:
+            return x
+        keep = [d for d in range(x.shape[-1]) if d not in ex]
+        return x[..., keep]
+
+    def _vae_free_states(self, batch: dict, carry: list | None) -> list:
+        """B-fix: produce the carry the way inference does — decode with latent=0 (no VAE) by
+        dropping the ACTION key — so the carried-state distribution matches eval. Detached
+        (no grad through the carry source), matching the truncated-BPTT handoff."""
+        b = {k: v for k, v in batch.items() if k != ACTION}
+        with torch.no_grad():
+            _, _, st = self.model(b, carry=carry, return_state=True)
+        return st
+
     def _jerk_term(self, actions: Tensor, gt: Tensor, pad: Tensor) -> Tensor:
         cfg = self.config
-        j = _jerk(actions, pad, cfg.smooth_jerk_mode)
+        a, g = self._smooth_dims(actions), self._smooth_dims(gt)
+        j = _jerk(a, pad, cfg.smooth_jerk_mode)
         if cfg.smooth_jerk_excess_only:
-            j = (j - _jerk(gt, pad, cfg.smooth_jerk_mode).detach()).clamp_min(0.0)
+            j = (j - _jerk(g, pad, cfg.smooth_jerk_mode).detach()).clamp_min(0.0)
         return j
 
     def _forward_smooth_single(self, batch):
@@ -333,6 +352,8 @@ class ACM2SmoothPolicy(ACM2Policy):
         cfg = self.config
         batch_n = {k: v for k, v in batch.items() if not k.endswith("_n1")}
         l1_n, jerk_n, kld_n, actions_n, states_n = self._chunk_losses(batch_n, carry=None)
+        if cfg.carry_train_vae_free:                                         # B-fix: VAE-free carry
+            states_n = self._vae_free_states(batch_n, carry=None)
         carry = detach_states(states_n) if cfg.carry_detach else states_n   # pure handoff
 
         _cand = {
@@ -347,8 +368,8 @@ class ACM2SmoothPolicy(ACM2Policy):
                                     if k + "_n1" in batch] or batch[OBS_IMAGES]
 
         l1_n1, jerk_n1, kld_n1, actions_n1, _ = self._chunk_losses(batch_n1, carry=carry)
-        bc = _boundary_continuity(actions_n, actions_n1, batch_n1["action_is_pad"],
-                                  cfg.smooth_boundary_velocity)
+        bc = _boundary_continuity(self._smooth_dims(actions_n), self._smooth_dims(actions_n1),
+                                  batch_n1["action_is_pad"], cfg.smooth_boundary_velocity)
 
         l1, jerk = l1_n + l1_n1, jerk_n + jerk_n1
         loss = l1 + cfg.smooth_boundary_weight * bc + cfg.smooth_jerk_weight * jerk
@@ -408,10 +429,11 @@ class ACM2SmoothPolicy(ACM2Policy):
             jerks.append(jerk_j)
             klds.append(kld_j)
             if prev_actions is not None and cfg.smooth_boundary_weight > 0:
-                bcs.append(_boundary_continuity(prev_actions, actions_j,
+                bcs.append(_boundary_continuity(self._smooth_dims(prev_actions), self._smooth_dims(actions_j),
                                                 batch_j["action_is_pad"], cfg.smooth_boundary_velocity))
             # Pure boundary handoff: detach so each chunk's graph stays shallow (truncated BPTT).
-            carry = detach_states(states_j) if cfg.carry_detach else states_j
+            nxt = self._vae_free_states(batch_j, carry) if cfg.carry_train_vae_free else states_j  # B-fix
+            carry = detach_states(nxt) if cfg.carry_detach else nxt
             prev_actions = actions_j
 
         l1 = torch.stack(l1s).mean()

@@ -13,7 +13,7 @@ carry gate, no carry noise, no carry-fusion modes — those were v12/v13 reactiv
 
 carry is purely "stitch the boundary smoothly", not "correct for disturbance".
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.acm2.configuration_acm2 import ACM2Config
@@ -57,6 +57,17 @@ class ACM2SmoothConfig(ACM2Config):
     smooth_jerk_weight: float = 0.02      # 청크 내 jerk(2차미분) 억제. 0 → off
     smooth_jerk_mode: str = "l1"          # l1 | l2
     smooth_jerk_excess_only: bool = True  # GT 청크의 jerk 초과분만 (시연보다 과하게 안 함)
+    # ── A-fix: 매끄러움(boundary+jerk) loss에서 제외할 액션 차원 ──────────────────
+    # 그리퍼는 grasp 위해 급격히(고 jerk·불연속) 닫혀야 하는데 매끄러움 loss가 이를 뭉갠다.
+    # ALOHA 14-dim = [좌팔6+좌그리퍼1, 우팔6+우그리퍼1] → 그리퍼 = [6, 13]. [] = 제외 없음(기존).
+    # ※ L1 재구성 손실에는 영향 없음(전체 차원 유지). boundary/jerk 항에서만 제외.
+    smooth_exclude_dims: list[int] = field(default_factory=list)
+
+    # ── B-fix: 학습 carry를 추론과 동일하게(VAE latent=0) 생성 ────────────────────
+    # 학습 carry는 원래 VAE latent(정답 액션 정보) 들어간 디코드의 state라 추론(latent=0)과
+    # 분포가 어긋나 정책을 망친다. True → 다음 청크에 넘길 carry만 latent=0 forward로 재생성
+    # (chunk 자기 L1 손실은 그대로 VAE 사용). carry_infer_mode=depth1과 짝.
+    carry_train_vae_free: bool = False
 
     def __post_init__(self):
         super().__post_init__()
