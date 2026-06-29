@@ -36,6 +36,7 @@ from lerobot.policies.acm2_icpe.configuration_acm2_icpe import ACM2ICPEConfig
 from lerobot.policies.acm2_sscp.configuration_acm2_sscp import ACM2SSCPConfig
 from lerobot.policies.acm3_sscp.configuration_acm3_sscp import ACM3SSCPConfig
 from lerobot.policies.acm3_sscp_bimamba.configuration_acm3_sscp_bimamba import ACM3SSCPBiMambaConfig
+from lerobot.policies.acm3_sscp_smooth.configuration_acm3_sscp_smooth import ACM3SSCPSmoothConfig
 from lerobot.policies.acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig
 from lerobot.policies.acm2_sscp_literal_smooth.configuration_acm2_sscp_literal_smooth import (
     ACM2SSCPLiteralSmoothConfig,
@@ -123,6 +124,11 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.acm3_sscp_bimamba.modeling_acm3_sscp_bimamba import ACM3SSCPBiMambaPolicy
 
         return ACM3SSCPBiMambaPolicy
+
+    elif name == "acm3_sscp_smooth":
+        from lerobot.policies.acm3_sscp_smooth.modeling_acm3_sscp_smooth import ACM3SSCPSmoothPolicy
+
+        return ACM3SSCPSmoothPolicy
 
     elif name == "acm2_sscp_literal":
         from lerobot.policies.acm2_sscp_literal.modeling_acm2_sscp_literal import ACM2SSCPLiteralPolicy
@@ -242,6 +248,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACM3SSCPConfig(**kwargs)
     elif policy_type == "acm3_sscp_bimamba":
         return ACM3SSCPBiMambaConfig(**kwargs)
+    elif policy_type == "acm3_sscp_smooth":
+        return ACM3SSCPSmoothConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal":
         return ACM2SSCPLiteralConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal_smooth":
@@ -438,13 +446,23 @@ def make_pre_post_processors(
         )
 
     # ACM3 family (Mamba-3) — most-derived subclass first.
-    # ACM3SSCPBiMambaConfig subclasses ACM3SSCPConfig → must precede it.
+    # ACM3SSCPBiMambaConfig / ACM3SSCPSmoothConfig subclass ACM3SSCPConfig → must precede it.
     elif isinstance(policy_cfg, ACM3SSCPBiMambaConfig):
         from lerobot.policies.acm3_sscp_bimamba.processor_acm3_sscp_bimamba import (
             make_acm3_sscp_bimamba_pre_post_processors,
         )
 
         processors = make_acm3_sscp_bimamba_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACM3SSCPSmoothConfig):
+        from lerobot.policies.acm3_sscp_smooth.processor_acm3_sscp_smooth import (
+            make_acm3_sscp_smooth_pre_post_processors,
+        )
+
+        processors = make_acm3_sscp_smooth_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )
