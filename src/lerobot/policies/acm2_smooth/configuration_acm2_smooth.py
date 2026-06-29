@@ -21,6 +21,7 @@ from lerobot.policies.acm2.configuration_acm2 import ACM2Config
 CHUNK_DECODER_MODES = ("causal", "bidir")
 BIMAMBA_FUSE_MODES = ("avg", "proj")
 SMOOTH_JERK_MODES = ("l1", "l2")
+CARRY_INFER_MODES = ("full", "depth1", "off")
 
 
 @PreTrainedConfig.register_subclass("acm2_smooth")
@@ -42,6 +43,14 @@ class ACM2SmoothConfig(ACM2Config):
     #  ReactiveSegmentDataset가 유효 세그먼트를 못 만들 수 있으니 데이터 길이에 맞게.)
     carry_train_chunks: int = 2
 
+    # 추론 carry 방식 (학습/추론 일치의 추론쪽 손잡이 — v17):
+    #   "full"   = 에피소드 내내 carry 누적 (carry_train_chunks=M 롤아웃 학습과 짝 = v16).
+    #   "depth1" = 매 청크 경계에서 carry를 "직전 청크의 fresh(carry=None) 디코드 state"에서만
+    #              받음 = 단일-경계 chunk-pair 학습(carry_train_chunks=2)과 정확히 일치(v17).
+    #              항상 depth-1이라 누적·발산 불가 → base 성능 피해 최소(경계당 디코드 2회).
+    #   "off"    = carry 끔 (acm2 zero-carry, ablation).
+    carry_infer_mode: str = "full"
+
     # ── smoothness 손실 (boundary-continuity + jerk) ─────────────────────────────
     smooth_boundary_weight: float = 0.1   # 경계 위치(+속도) 매칭. 0 → off
     smooth_boundary_velocity: bool = True # True: 위치＋속도(C¹) / False: 위치만(C⁰)
@@ -61,3 +70,5 @@ class ACM2SmoothConfig(ACM2Config):
             raise ValueError("smooth_boundary_weight / smooth_jerk_weight must be >= 0.")
         if self.carry_train_chunks < 2:
             raise ValueError("carry_train_chunks must be >= 2 (2 == chunk-pair).")
+        if self.carry_infer_mode not in CARRY_INFER_MODES:
+            raise ValueError(f"carry_infer_mode must be one of {CARRY_INFER_MODES}, got '{self.carry_infer_mode}'.")

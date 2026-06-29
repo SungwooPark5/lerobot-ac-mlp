@@ -234,7 +234,8 @@ class ACM2SmoothPolicy(ACM2Policy):
     # ── Inference ───────────────────────────────────────────────────────────────
     def reset(self):
         super().reset()                                  # _action_queue / temporal_ensembler
-        self._carry: list | None = None
+        self._carry: list | None = None                  # full-mode episode carry
+        self._depth1_carry: list | None = None           # depth1-mode: fresh state of prev chunk
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
@@ -256,10 +257,32 @@ class ACM2SmoothPolicy(ACM2Policy):
         if self.config.image_features:
             batch = dict(batch)
             batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features]
-        carry = self._carry if self.config.carry_enabled else None
-        actions, _, new_states = self.model(batch, carry=carry, return_state=True)
-        if self.config.carry_enabled:
-            self._carry = detach_states(new_states)      # pure handoff (no gate/noise)
+        mode = self.config.carry_infer_mode if self.config.carry_enabled else "off"
+
+        if mode == "off":                                # acm2 zero-carry
+            actions, _, _ = self.model(batch, carry=None, return_state=True)
+            return actions
+
+        if mode == "depth1":
+            # v17: carry = state from a FRESH (carry=None) decode of the PREVIOUS chunk's obs.
+            # This is exactly the single-boundary chunk-pair training condition
+            # (chunk_n: carry=None → state_n; chunk_{n+1}: carry=state_n) applied at EVERY
+            # boundary. The carried state is always depth-1 (never compounds) → cannot diverge
+            # across the episode, so base SR is preserved while the seam is still stitched.
+            # Pair with carry_train_chunks=2 (single-hop training).
+            carry = self._depth1_carry
+            actions, _, states = self.model(batch, carry=carry, return_state=True)
+            if carry is None:
+                self._depth1_carry = detach_states(states)   # 1st chunk: actual decode IS fresh
+            else:
+                _, _, fresh = self.model(batch, carry=None, return_state=True)
+                self._depth1_carry = detach_states(fresh)
+            return actions
+
+        # mode == "full" (default): accumulate the carry across the whole episode. Matches
+        # training only when trained with the carry_train_chunks=M rollout (v16).
+        actions, _, new_states = self.model(batch, carry=self._carry, return_state=True)
+        self._carry = detach_states(new_states)          # pure handoff (no gate/noise)
         return actions
 
     # ── Training ─────────────────────────────────────────────────────────────────
