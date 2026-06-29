@@ -1,50 +1,54 @@
 #!/usr/bin/env python
-"""ACM2 smooth — State-Carried BiMamba decoder with boundary-continuity + jerk training loss (v14).
+"""ACM2 smooth — Smooth Chunking via BiMamba + Boundary State Carry (v14).
 
-Architecture == acm2_sscp_literal_bimamba (ACT Transformer encoder + bidirectional Mamba-2
-decoder + recurrent state carry across chunk boundaries). `_build_model` is unchanged, so v12
-BiMamba checkpoints load with zero key mismatch.
+Base = `acm2` (ACT Transformer encoder + Mamba-2 decoder, ZERO carry — clean).
+v14 adds two ORTHOGONAL smoothing axes, with NO disturbance machinery (no obs-driven
+carry gate, no carry noise, no carry-fusion modes — those were v12/v13 reactive/외란 기제):
 
-v14 adds ONLY training losses (no architecture change, inference unchanged):
-  • boundary-continuity loss: match POSITION (and optionally VELOCITY = C1) between the end of
-    chunk n and the start of chunk n+1, using the chunk-pair carry path. Removes the structural
-    chunk-boundary jerk that plain behavior cloning leaves.
-  • jerk penalty: minimize the 2nd difference (jerk proxy) of the predicted action chunk.
+  ① BiMamba (chunk_decoder=bidir): bidirectional Mamba scan over the chunk → smooth + accurate
+     chunk *interior*.  [은지님]
+  ② Pure boundary state carry: hand off the Mamba forward-scan recurrent state across chunk
+     boundaries (detach only — no gate, no noise) + boundary-continuity (C1) + jerk training
+     loss → smooth chunk *boundaries*.  [나]
 
-Headline: the carried recurrent state + a velocity-aware boundary loss give C1-continuous
-(smooth) trajectories — vs ACT temporal ensembling which averages in OUTPUT space (C0, stale).
-Trained with ChunkPairDataset (2 decodes); no reactive/per-step replanning (v13 archived).
+carry is purely "stitch the boundary smoothly", not "correct for disturbance".
 """
 from dataclasses import dataclass
 
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.policies.acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_bimamba import (
-    ACM2SSCPLiteralBiMambaConfig,
-)
+from lerobot.policies.acm2.configuration_acm2 import ACM2Config
 
+CHUNK_DECODER_MODES = ("causal", "bidir")
+BIMAMBA_FUSE_MODES = ("avg", "proj")
 SMOOTH_JERK_MODES = ("l1", "l2")
 
 
 @PreTrainedConfig.register_subclass("acm2_smooth")
 @dataclass
-class ACM2SmoothConfig(ACM2SSCPLiteralBiMambaConfig):
-    # ── Boundary-continuity loss (needs chunk-pair: use_chunk_pairs + sscp_p_carry>0) ──
-    # Weight on matching the chunk n→n+1 boundary. 0 disables (→ parent bimamba behavior).
-    smooth_boundary_weight: float = 0.1
-    # True: match position AND velocity at the boundary (C1). False: position only (C0).
-    smooth_boundary_velocity: bool = True
+class ACM2SmoothConfig(ACM2Config):
+    # ── ① BiMamba (청크 내부, 은지님) ───────────────────────────────────────────
+    chunk_decoder: str = "bidir"          # "causal" == acm2 디코더 / "bidir" == BiMamba
+    bimamba_fuse: str = "avg"             # forward/backward 융합: avg | proj(학습)
+    bimamba_share_weights: bool = True    # True: backward가 forward layer 재사용(param-matched)
 
-    # ── Jerk penalty (intra-chunk 2nd-difference smoothness) ──────────────────────
-    # Weight on the predicted-action jerk proxy. Keep SMALL — too large fights the L1/BC fit.
-    smooth_jerk_weight: float = 0.02
-    # "l1" (robust) or "l2" (penalizes spikes harder).
-    smooth_jerk_mode: str = "l1"
-    # If True, penalize only jerk ABOVE the ground-truth chunk's jerk (excess jerk), so the
-    # policy is not forced smoother than the demonstrations. If False, penalize raw jerk.
-    smooth_jerk_excess_only: bool = True
+    # ── ② 순수 경계 carry (청크 경계, 나) — 게이트/노이즈 없음 ──────────────────
+    carry_enabled: bool = True            # False → acm2 zero-carry (carry ablation)
+    carry_p: float = 0.5                  # chunk-pair 학습 확률 (boundary loss용 연속 청크쌍)
+    carry_detach: bool = True             # 경계에서 carry detach (truncated BPTT)
+
+    # ── smoothness 손실 (boundary-continuity + jerk) ─────────────────────────────
+    smooth_boundary_weight: float = 0.1   # 경계 위치(+속도) 매칭. 0 → off
+    smooth_boundary_velocity: bool = True # True: 위치＋속도(C¹) / False: 위치만(C⁰)
+    smooth_jerk_weight: float = 0.02      # 청크 내 jerk(2차미분) 억제. 0 → off
+    smooth_jerk_mode: str = "l1"          # l1 | l2
+    smooth_jerk_excess_only: bool = True  # GT 청크의 jerk 초과분만 (시연보다 과하게 안 함)
 
     def __post_init__(self):
         super().__post_init__()
+        if self.chunk_decoder not in CHUNK_DECODER_MODES:
+            raise ValueError(f"chunk_decoder must be one of {CHUNK_DECODER_MODES}, got '{self.chunk_decoder}'.")
+        if self.bimamba_fuse not in BIMAMBA_FUSE_MODES:
+            raise ValueError(f"bimamba_fuse must be one of {BIMAMBA_FUSE_MODES}, got '{self.bimamba_fuse}'.")
         if self.smooth_jerk_mode not in SMOOTH_JERK_MODES:
             raise ValueError(f"smooth_jerk_mode must be one of {SMOOTH_JERK_MODES}, got '{self.smooth_jerk_mode}'.")
         if self.smooth_boundary_weight < 0 or self.smooth_jerk_weight < 0:
