@@ -34,6 +34,7 @@ from lerobot.policies.act_sscp.configuration_act_sscp import ACTSSCPConfig
 from lerobot.policies.acm2.configuration_acm2 import ACM2Config
 from lerobot.policies.acm2_icpe.configuration_acm2_icpe import ACM2ICPEConfig
 from lerobot.policies.acm2_sscp.configuration_acm2_sscp import ACM2SSCPConfig
+from lerobot.policies.acm3_sscp.configuration_acm3_sscp import ACM3SSCPConfig
 from lerobot.policies.acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig
 from lerobot.policies.acm2_sscp_literal_smooth.configuration_acm2_sscp_literal_smooth import (
     ACM2SSCPLiteralSmoothConfig,
@@ -111,6 +112,11 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.acm2_sscp.modeling_acm2_sscp import ACM2SSCPPolicy
 
         return ACM2SSCPPolicy
+
+    elif name == "acm3_sscp":
+        from lerobot.policies.acm3_sscp.modeling_acm3_sscp import ACM3SSCPPolicy
+
+        return ACM3SSCPPolicy
 
     elif name == "acm2_sscp_literal":
         from lerobot.policies.acm2_sscp_literal.modeling_acm2_sscp_literal import ACM2SSCPLiteralPolicy
@@ -226,6 +232,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACM2ICPEConfig(**kwargs)
     elif policy_type == "acm2_sscp":
         return ACM2SSCPConfig(**kwargs)
+    elif policy_type == "acm3_sscp":
+        return ACM3SSCPConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal":
         return ACM2SSCPLiteralConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal_smooth":
@@ -417,6 +425,15 @@ def make_pre_post_processors(
         from lerobot.policies.acm2_sscp.processor_acm2_sscp import make_acm2_sscp_pre_post_processors
 
         processors = make_acm2_sscp_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    # ACM3 family (Mamba-3) — ACM3SSCPConfig subclasses ACM3Config
+    elif isinstance(policy_cfg, ACM3SSCPConfig):
+        from lerobot.policies.acm3_sscp.processor_acm3_sscp import make_acm3_sscp_pre_post_processors
+
+        processors = make_acm3_sscp_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )
