@@ -322,12 +322,20 @@ class ACM2SmoothPolicy(ACM2Policy):
         return x[..., keep]
 
     def _vae_free_states(self, batch: dict, carry: list | None) -> list:
-        """B-fix: produce the carry the way inference does — decode with latent=0 (no VAE) by
-        dropping the ACTION key — so the carried-state distribution matches eval. Detached
-        (no grad through the carry source), matching the truncated-BPTT handoff."""
-        b = {k: v for k, v in batch.items() if k != ACTION}
-        with torch.no_grad():
-            _, _, st = self.model(b, carry=carry, return_state=True)
+        """B-fix: produce the carry the way inference does — a VAE-free (latent=0) decode.
+
+        Run the model in EVAL mode under no_grad: the VAE branch (and its `actions required`
+        assert) is gated on `self.training`, so eval mode forces latent=0 exactly as at
+        inference (also disables dropout → fully eval-faithful). Detached handoff (no grad
+        through the carry source), matching truncated-BPTT. ACTION is simply ignored."""
+        was_training = self.model.training
+        self.model.eval()
+        try:
+            with torch.no_grad():
+                _, _, st = self.model(batch, carry=carry, return_state=True)
+        finally:
+            if was_training:
+                self.model.train()
         return st
 
     def _jerk_term(self, actions: Tensor, gt: Tensor, pad: Tensor) -> Tensor:
