@@ -37,6 +37,21 @@ from lerobot.policies.acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_
 from lerobot.policies.acm2_sscp_literal_smooth.configuration_acm2_sscp_literal_smooth import (
     ACM2SSCPLiteralSmoothConfig,
 )
+from lerobot.policies.acm2_sscp_literal_smooth_blend.configuration_acm2_sscp_literal_smooth_blend import (
+    ACM2SSCPLiteralSmoothBlendConfig,
+)
+from lerobot.policies.acm2_sscp_literal_smooth_overlap.configuration_acm2_sscp_literal_smooth_overlap import (
+    ACM2SSCPLiteralSmoothOverlapConfig,
+)
+from lerobot.policies.acm2_sscp_literal_smooth_spectral.configuration_acm2_sscp_literal_smooth_spectral import (
+    ACM2SSCPLiteralSmoothSpectralConfig,
+)
+from lerobot.policies.acm2_sscp_literal_smooth_state.configuration_acm2_sscp_literal_smooth_state import (
+    ACM2SSCPLiteralSmoothStateConfig,
+)
+from lerobot.policies.acm2_sscp_literal_smooth_velint.configuration_acm2_sscp_literal_smooth_velint import (
+    ACM2SSCPLiteralSmoothVelIntConfig,
+)
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.groot.configuration_groot import GrootConfig
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
@@ -104,6 +119,36 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         )
 
         return ACM2SSCPLiteralSmoothPolicy
+    elif name == "acm2_sscp_literal_smooth_state":
+        from lerobot.policies.acm2_sscp_literal_smooth_state.modeling_acm2_sscp_literal_smooth_state import (
+            ACM2SSCPLiteralSmoothStatePolicy,
+        )
+
+        return ACM2SSCPLiteralSmoothStatePolicy
+    elif name == "acm2_sscp_literal_smooth_spectral":
+        from lerobot.policies.acm2_sscp_literal_smooth_spectral.modeling_acm2_sscp_literal_smooth_spectral import (
+            ACM2SSCPLiteralSmoothSpectralPolicy,
+        )
+
+        return ACM2SSCPLiteralSmoothSpectralPolicy
+    elif name == "acm2_sscp_literal_smooth_overlap":
+        from lerobot.policies.acm2_sscp_literal_smooth_overlap.modeling_acm2_sscp_literal_smooth_overlap import (
+            ACM2SSCPLiteralSmoothOverlapPolicy,
+        )
+
+        return ACM2SSCPLiteralSmoothOverlapPolicy
+    elif name == "acm2_sscp_literal_smooth_blend":
+        from lerobot.policies.acm2_sscp_literal_smooth_blend.modeling_acm2_sscp_literal_smooth_blend import (
+            ACM2SSCPLiteralSmoothBlendPolicy,
+        )
+
+        return ACM2SSCPLiteralSmoothBlendPolicy
+    elif name == "acm2_sscp_literal_smooth_velint":
+        from lerobot.policies.acm2_sscp_literal_smooth_velint.modeling_acm2_sscp_literal_smooth_velint import (
+            ACM2SSCPLiteralSmoothVelIntPolicy,
+        )
+
+        return ACM2SSCPLiteralSmoothVelIntPolicy
     elif name == "vqbet":
         from lerobot.policies.vqbet.modeling_vqbet import VQBeTPolicy
 
@@ -174,6 +219,16 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACM2SSCPLiteralBiMambaConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal_smooth":
         return ACM2SSCPLiteralSmoothConfig(**kwargs)
+    elif policy_type == "acm2_sscp_literal_smooth_state":
+        return ACM2SSCPLiteralSmoothStateConfig(**kwargs)
+    elif policy_type == "acm2_sscp_literal_smooth_spectral":
+        return ACM2SSCPLiteralSmoothSpectralConfig(**kwargs)
+    elif policy_type == "acm2_sscp_literal_smooth_overlap":
+        return ACM2SSCPLiteralSmoothOverlapConfig(**kwargs)
+    elif policy_type == "acm2_sscp_literal_smooth_blend":
+        return ACM2SSCPLiteralSmoothBlendConfig(**kwargs)
+    elif policy_type == "acm2_sscp_literal_smooth_velint":
+        return ACM2SSCPLiteralSmoothVelIntConfig(**kwargs)
     elif policy_type == "vqbet":
         return VQBeTConfig(**kwargs)
     elif policy_type == "pi0":
@@ -311,7 +366,8 @@ def make_pre_post_processors(
         )
 
     elif isinstance(policy_cfg, ACM2SSCPLiteralConfig):
-        # Covers acm2_sscp_literal and its subclasses (acm2_sscp_literal_bimamba / _smooth).
+        # Covers acm2_sscp_literal and every subclass (bimamba / smooth / smooth_state /
+        # smooth_spectral / smooth_overlap / smooth_blend / smooth_velint) via isinstance.
         # Reuses eunji's ACM2 processor (normalization only; config-driven).
         from lerobot.policies.acm2.processor_acm2 import make_acm2_pre_post_processors
 

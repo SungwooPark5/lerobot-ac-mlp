@@ -21,6 +21,21 @@ from .acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_bimamba import (
 from .acm2_sscp_literal_smooth.configuration_acm2_sscp_literal_smooth import (
     ACM2SSCPLiteralSmoothConfig as ACM2SSCPLiteralSmoothConfig,
 )
+from .acm2_sscp_literal_smooth_blend.configuration_acm2_sscp_literal_smooth_blend import (
+    ACM2SSCPLiteralSmoothBlendConfig as ACM2SSCPLiteralSmoothBlendConfig,
+)
+from .acm2_sscp_literal_smooth_overlap.configuration_acm2_sscp_literal_smooth_overlap import (
+    ACM2SSCPLiteralSmoothOverlapConfig as ACM2SSCPLiteralSmoothOverlapConfig,
+)
+from .acm2_sscp_literal_smooth_spectral.configuration_acm2_sscp_literal_smooth_spectral import (
+    ACM2SSCPLiteralSmoothSpectralConfig as ACM2SSCPLiteralSmoothSpectralConfig,
+)
+from .acm2_sscp_literal_smooth_state.configuration_acm2_sscp_literal_smooth_state import (
+    ACM2SSCPLiteralSmoothStateConfig as ACM2SSCPLiteralSmoothStateConfig,
+)
+from .acm2_sscp_literal_smooth_velint.configuration_acm2_sscp_literal_smooth_velint import (
+    ACM2SSCPLiteralSmoothVelIntConfig as ACM2SSCPLiteralSmoothVelIntConfig,
+)
 from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
 from .groot.configuration_groot import GrootConfig as GrootConfig
 from .pi0.configuration_pi0 import PI0Config as PI0Config
