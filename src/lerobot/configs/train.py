@@ -55,11 +55,15 @@ class TrainPipelineConfig(HubMixin):
     batch_size: int = 8
     steps: int = 100_000
     eval_freq: int = 20_000
+    eval_start_step: int = 0  # eval을 시작할 step (이전 step은 eval 건너뜀)
     log_freq: int = 200
     tolerance_s: float = 1e-4
     save_checkpoint: bool = True
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 20_000
+    # Set to True to wrap the dataset with ChunkPairDataset for SSCP chunk-continuation training.
+    # Requires policy.chunk_size to be set and the policy to handle "action_n1" keys in forward().
+    use_chunk_pairs: bool = False
     use_policy_training_preset: bool = True
     optimizer: OptimizerConfig | None = None
     scheduler: LRSchedulerConfig | None = None

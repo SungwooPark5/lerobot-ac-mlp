@@ -273,6 +273,26 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
+    # Wrap dataset for SSCP chunk-continuation (carry) training. use_chunk_pairs=True pairs
+    # each frame's chunk n with chunk n+1 ("*_n1" keys) so the carry policies'
+    # _forward_chunk_pair can train the boundary handoff. Zero effect on standard training.
+    if cfg.use_chunk_pairs:
+        chunk_size = getattr(cfg.policy, "chunk_size", None)
+        if chunk_size is None:
+            raise ValueError("use_chunk_pairs=True requires policy.chunk_size to be set.")
+        from lerobot.datasets.chunk_pair_dataset import ChunkPairDataset
+
+        dataset = ChunkPairDataset(
+            base_dataset=dataset,
+            chunk_size=chunk_size,
+            dataset_stats=dataset.meta.stats,
+        )
+        if is_main_process:
+            logging.info(
+                f"ChunkPairDataset active: {len(dataset)} pairs "
+                f"(chunk_size={chunk_size}, sscp_p_carry={getattr(cfg.policy, 'sscp_p_carry', 'N/A')})"
+            )
+
     # create dataloader for offline training
     if hasattr(cfg.policy, "drop_n_last_frames"):
         shuffle = False
@@ -329,10 +349,26 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if is_main_process:
         logging.info("Start offline training on a fixed dataset")
 
+    # ChunkPairDataset adds custom "*_n1" keys, but the preprocessor's batch↔transition
+    # round-trip drops unknown keys. Pull them out before the preprocessor and restore them
+    # (on the preprocessed batch's device) afterwards so "action_n1" reaches forward();
+    # otherwise the policy silently falls back to single-chunk training (no carry / no
+    # boundary-continuity loss).
+    _preserve_carry = bool(getattr(cfg, "use_chunk_pairs", False))
+
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
+        carry_keys = (
+            {k: batch.pop(k) for k in list(batch) if k.endswith("_n1")}
+            if _preserve_carry
+            else {}
+        )
         batch = preprocessor(batch)
+        if carry_keys:
+            _dev = next((v.device for v in batch.values() if torch.is_tensor(v)), None)
+            for k, v in carry_keys.items():
+                batch[k] = v.to(_dev) if (torch.is_tensor(v) and _dev is not None) else v
         train_tracker.dataloading_s = time.perf_counter() - start_time
 
         train_tracker, output_dict = update_policy(
@@ -351,7 +387,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         train_tracker.step()
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main_process
         is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
-        is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
+        is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0 and step >= cfg.eval_start_step
 
         if is_log_step:
             logging.info(train_tracker)
