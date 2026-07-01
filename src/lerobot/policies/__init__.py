@@ -13,6 +13,14 @@
 # limitations under the License.
 
 from .act.configuration_act import ACTConfig as ACTConfig
+from .acm2.configuration_acm2 import ACM2Config as ACM2Config
+from .acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig as ACM2SSCPLiteralConfig
+from .acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_bimamba import (
+    ACM2SSCPLiteralBiMambaConfig as ACM2SSCPLiteralBiMambaConfig,
+)
+from .acm2_sscp_literal_smooth.configuration_acm2_sscp_literal_smooth import (
+    ACM2SSCPLiteralSmoothConfig as ACM2SSCPLiteralSmoothConfig,
+)
 from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
 from .groot.configuration_groot import GrootConfig as GrootConfig
 from .pi0.configuration_pi0 import PI0Config as PI0Config
@@ -25,6 +33,10 @@ from .xvla.configuration_xvla import XVLAConfig as XVLAConfig
 
 __all__ = [
     "ACTConfig",
+    "ACM2Config",
+    "ACM2SSCPLiteralConfig",
+    "ACM2SSCPLiteralBiMambaConfig",
+    "ACM2SSCPLiteralSmoothConfig",
     "DiffusionConfig",
     "PI0Config",
     "PI05Config",
