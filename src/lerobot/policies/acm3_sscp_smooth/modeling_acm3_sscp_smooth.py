@@ -29,11 +29,31 @@ class ACM3SSCPSmoothPolicy(ACM3SSCPPolicy):
     """ACM3+SSCP with a chunk-boundary continuity loss added to CC training.
 
     Same model and inference as ACM3SSCPPolicy; only `_forward_chunk_pair` is
-    overridden to add the seam-smoothness term.
+    overridden to add the seam-smoothness term. Supports λ warmup, C1/C2 order,
+    and an inference-mode (free-latent) variant of the seam loss.
     """
 
     config_class = ACM3SSCPSmoothConfig
     name = "acm3_sscp_smooth"
+
+    def __init__(self, config: ACM3SSCPSmoothConfig):
+        super().__init__(config)
+        # training-step counter for λ warmup (persists across resume).
+        self.register_buffer("_smooth_step", torch.zeros((), dtype=torch.long), persistent=True)
+
+    # ── λ warmup schedule ───────────────────────────────────────────────────────
+    def _smooth_lambda(self) -> float:
+        """Current λ: 0 before warmup_start, ramps to sscp_smooth_weight over warmup_steps."""
+        w = getattr(self.config, "sscp_smooth_weight", 0.0)
+        if w <= 0.0:
+            return 0.0
+        start = getattr(self.config, "sscp_smooth_warmup_start", 0)
+        length = getattr(self.config, "sscp_smooth_warmup_steps", 0)
+        step = int(self._smooth_step.item()) if hasattr(self, "_smooth_step") else 0
+        if length <= 0:
+            return w if step >= start else 0.0
+        frac = (step - start) / float(length)
+        return w * min(1.0, max(0.0, frac))
 
     # ── Boundary continuity loss ────────────────────────────────────────────────
     def _seam_loss(
@@ -43,11 +63,10 @@ class ACM3SSCPSmoothPolicy(ACM3SSCPPolicy):
         batch_n: dict[str, Tensor],
         batch_n1: dict[str, Tensor],
     ) -> Tensor:
-        """Match predicted seam velocity/acceleration to GT across the boundary.
+        """Match predicted seam finite-differences to GT across the boundary.
 
         Window straddling the seam: [a_n[-2], a_n[-1] | a_{n+1}[0], a_{n+1}[1]].
-        Penalise |Δ(pred) - Δ(gt)| for the 1st (velocity) and 2nd (acceleration)
-        finite differences, masking out padded steps.
+        order=1 → C1 (velocity) only; order>=2 → + C2 (acceleration). Masks padding.
         """
         pred = torch.cat([act_n[:, -2:, :], act_n1[:, :2, :]], dim=1)            # (B, 4, A)
         gt = torch.cat([batch_n[ACTION][:, -2:, :], batch_n1[ACTION][:, :2, :]], dim=1)
@@ -68,12 +87,37 @@ class ACM3SSCPSmoothPolicy(ACM3SSCPPolicy):
             m = vm.float()
             return (err * m).sum() / m.sum().clamp_min(1.0)
 
-        return masked_fd_l1(pred, gt, valid, 1) + masked_fd_l1(pred, gt, valid, 2)
+        order = getattr(self.config, "sscp_smooth_order", 2)
+        loss = masked_fd_l1(pred, gt, valid, 1)             # C1 (velocity) always
+        if order >= 2:
+            loss = loss + masked_fd_l1(pred, gt, valid, 2)  # C2 (acceleration)
+        return loss
+
+    def _free_latent_seam_actions(self, batch_n, batch_n1):
+        """Inference-mode (VAE latent=0) seam predictions via an eval-mode forward.
+
+        Setting the model to eval makes _encode take the latent=0 branch (no VAE
+        teacher forcing) and skips the training assert — matching the actual
+        inference boundary. Gradients still flow (only dropout/BN behaviour changes).
+        """
+        was = self.model.training
+        self.model.eval()
+        try:
+            a_n, _, do_n = self.model(batch_n, carry=None, return_decoder_out=True)
+            carry_f = do_n[-1:, :, :].transpose(0, 1).detach()
+            a_n1, _, _ = self.model(batch_n1, carry=carry_f, return_decoder_out=True)
+        finally:
+            self.model.train(was)
+        return a_n, a_n1
 
     # ── CC training with the extra seam term ────────────────────────────────────
     def _forward_chunk_pair(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
-        # weight 0 → behave exactly like acm3_sscp (no seam computation).
-        if getattr(self.config, "sscp_smooth_weight", 0.0) <= 0.0:
+        if self.training and hasattr(self, "_smooth_step"):
+            self._smooth_step += 1
+
+        lam = self._smooth_lambda()
+        # λ<=0 (weight 0 OR warmup not started) → identical to acm3_sscp (carry only).
+        if lam <= 0.0:
             return super()._forward_chunk_pair(batch)
 
         # ── Chunk n ───────────────────────────────────────────────────────────
@@ -100,19 +144,23 @@ class ACM3SSCPSmoothPolicy(ACM3SSCPPolicy):
 
         loss_n1, loss_dict_n1, dec_out_n1 = self._forward_single(batch_n1, carry=carry, return_decoder_out=True)
 
-        # ── Predicted actions (reuse action_head; no extra model forward) ──────
-        act_n = self.model.action_head(dec_out_n.transpose(0, 1))     # (B, K, A)
-        act_n1 = self.model.action_head(dec_out_n1.transpose(0, 1))   # (B, K, A)
+        # ── Seam predictions: teacher-forced (default) or inference-mode (free_latent) ──
+        if getattr(self.config, "sscp_smooth_free_latent", False):
+            act_n, act_n1 = self._free_latent_seam_actions(batch_n, batch_n1)
+        else:
+            act_n = self.model.action_head(dec_out_n.transpose(0, 1))     # (B, K, A)
+            act_n1 = self.model.action_head(dec_out_n1.transpose(0, 1))   # (B, K, A)
 
         l_smooth = self._seam_loss(act_n, act_n1, batch_n, batch_n1)
 
-        # ── Combined loss ─────────────────────────────────────────────────────
-        total_loss = loss_n + loss_n1 + self.config.sscp_smooth_weight * l_smooth
+        # ── Combined loss (λ from warmup schedule) ────────────────────────────
+        total_loss = loss_n + loss_n1 + lam * l_smooth
         combined = {
-            "l1_loss":     (loss_dict_n["l1_loss"] + loss_dict_n1["l1_loss"]) / 2,
-            "l1_loss_n":   loss_dict_n["l1_loss"],
-            "l1_loss_n1":  loss_dict_n1["l1_loss"],
-            "smooth_loss": l_smooth.item(),
+            "l1_loss":       (loss_dict_n["l1_loss"] + loss_dict_n1["l1_loss"]) / 2,
+            "l1_loss_n":     loss_dict_n["l1_loss"],
+            "l1_loss_n1":    loss_dict_n1["l1_loss"],
+            "smooth_loss":   l_smooth.item(),
+            "smooth_lambda": lam,
         }
         if "kld_loss" in loss_dict_n:
             combined["kld_loss"] = (loss_dict_n["kld_loss"] + loss_dict_n1.get("kld_loss", 0.0)) / 2

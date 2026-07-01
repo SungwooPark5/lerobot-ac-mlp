@@ -34,3 +34,23 @@ class ACM3SSCPSmoothConfig(ACM3SSCPConfig):
 
     # λ for the boundary continuity loss. 0 = off (== acm3_sscp). Sweep this.
     sscp_smooth_weight: float = 0.0
+
+    # ── λ warmup ──────────────────────────────────────────────────────────────
+    # Ramp λ from 0 → sscp_smooth_weight linearly over
+    # [warmup_start, warmup_start + warmup_steps]. λ = 0 before warmup_start.
+    # Rationale: let the model learn the task (grasp) FIRST, then add smoothness,
+    # so the seam loss doesn't kill the critical pre-grasp motion early on.
+    # warmup_steps = 0 → no ramp (λ jumps to full at warmup_start).
+    sscp_smooth_warmup_start: int = 0
+    sscp_smooth_warmup_steps: int = 0
+
+    # Finite-difference order of the seam loss:
+    #   1 → C1 only (velocity match)                  — gentler, recommended for sweep
+    #   2 → C1 + C2 (velocity + acceleration match)   — original, more aggressive
+    sscp_smooth_order: int = 2
+
+    # If True, compute the seam loss on INFERENCE-mode (VAE latent = 0) predictions
+    # via an extra eval-mode forward, instead of the teacher-forced training
+    # predictions. Targets the actual inference boundary (Phase-2 fix). Costs 2
+    # extra forwards/step. Default False.
+    sscp_smooth_free_latent: bool = False
