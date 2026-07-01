@@ -257,6 +257,7 @@ def eval_policy(
     n_episodes: int,
     max_episodes_rendered: int = 0,
     videos_dir: Path | None = None,
+    actions_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
 ) -> dict:
@@ -267,6 +268,8 @@ def eval_policy(
         n_episodes: The number of episodes to evaluate.
         max_episodes_rendered: Maximum number of episodes to render into videos.
         videos_dir: Where to save rendered videos.
+        actions_dir: If set, save the per-episode executed action trajectories to
+            ``actions_dir / "actions.pt"`` (a list of (T, action_dim) CPU tensors, done-masked).
         return_episode_data: Whether to return episode data for online training. Incorporates the data into
             the "episodes" key of the returned dictionary.
         start_seed: The first seed to use for the first individual rollout. For all subsequent rollouts the
@@ -311,6 +314,9 @@ def eval_policy(
 
     if max_episodes_rendered > 0:
         video_paths: list[str] = []
+
+    if actions_dir is not None:
+        action_trajs: list[torch.Tensor] = []
 
     if return_episode_data:
         episode_data: dict | None = None
@@ -362,6 +368,12 @@ def eval_policy(
         else:
             all_seeds.append(None)
 
+        # Collect executed action trajectories (done-masked, per episode) for optional .pt dump.
+        if actions_dir is not None:
+            batch_actions = rollout_data[ACTION].to("cpu")
+            for b, di in enumerate(done_indices.tolist()):
+                action_trajs.append(batch_actions[b, : di + 1].clone())
+
         # FIXME: episode_data is either None or it doesn't exist
         if return_episode_data:
             this_episode_data = _compile_episode_data(
@@ -411,6 +423,11 @@ def eval_policy(
     # Wait till all video rendering threads are done.
     for thread in threads:
         thread.join()
+
+    # Save executed action trajectories as a .pt (list of (T, action_dim) CPU tensors).
+    if actions_dir is not None:
+        actions_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(action_trajs[:n_episodes], actions_dir / "actions.pt")
 
     # Compile eval info.
     info = {
@@ -589,6 +606,7 @@ def eval_one(
     n_episodes: int,
     max_episodes_rendered: int,
     videos_dir: Path | None,
+    actions_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
 ) -> TaskMetrics:
@@ -606,6 +624,7 @@ def eval_one(
         n_episodes=n_episodes,
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=task_videos_dir,
+        actions_dir=actions_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
     )
@@ -632,6 +651,7 @@ def run_one(
     n_episodes: int,
     max_episodes_rendered: int,
     videos_dir: Path | None,
+    actions_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
 ):
@@ -645,6 +665,10 @@ def run_one(
         task_videos_dir = videos_dir / f"{task_group}_{task_id}"
         task_videos_dir.mkdir(parents=True, exist_ok=True)
 
+    task_actions_dir = None
+    if actions_dir is not None:
+        task_actions_dir = actions_dir / f"{task_group}_{task_id}"
+
     # Call the existing eval_one (assumed to return TaskMetrics-like dict)
     metrics = eval_one(
         env,
@@ -656,6 +680,7 @@ def run_one(
         n_episodes=n_episodes,
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=task_videos_dir,
+        actions_dir=task_actions_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
     )
@@ -676,6 +701,7 @@ def eval_policy_all(
     *,
     max_episodes_rendered: int = 0,
     videos_dir: Path | None = None,
+    actions_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
     max_parallel_tasks: int = 1,
@@ -732,6 +758,7 @@ def eval_policy_all(
         n_episodes=n_episodes,
         max_episodes_rendered=max_episodes_rendered,
         videos_dir=videos_dir,
+        actions_dir=actions_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
     )

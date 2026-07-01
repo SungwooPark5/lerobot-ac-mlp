@@ -459,6 +459,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                         postprocessor=postprocessor,
                         n_episodes=cfg.eval.n_episodes,
                         videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
+                        actions_dir=cfg.output_dir / "eval" / f"actions_step_{step_id}",
                         max_episodes_rendered=0,  # do not save eval videos
                         start_seed=cfg.seed,
                         max_parallel_tasks=cfg.env.max_parallel_tasks,
