@@ -573,7 +573,7 @@ def eval_main(cfg: EvalPipelineConfig):
             preprocessor=preprocessor,
             postprocessor=postprocessor,
             n_episodes=cfg.eval.n_episodes,
-            max_episodes_rendered=10,
+            max_episodes_rendered=0,  # do not save eval videos
             videos_dir=Path(cfg.output_dir) / "videos",
             actions_dir=actions_dir,
             start_seed=cfg.seed,
