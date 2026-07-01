@@ -610,6 +610,9 @@ class ACM2SSCPLiteralPolicy(PreTrainedPolicy):
         return self._forward_single(batch, carry=None)[:2]
 
     def _forward_single(self, batch: dict[str, Tensor], carry: list | None) -> tuple:
+        """Returns (loss, loss_dict, new_states, actions_hat). actions_hat is exposed so
+        subclasses (e.g. the smooth variant) can add trajectory-level losses without an
+        extra forward pass."""
         actions_hat, (mu, log_sigma_x2), new_states = self.model(batch, carry=carry, return_state=True)
 
         K = actions_hat.shape[1]
@@ -633,12 +636,12 @@ class ACM2SSCPLiteralPolicy(PreTrainedPolicy):
             loss = l1 + kld * self.config.kl_weight
         else:
             loss = l1
-        return loss, loss_dict, new_states
+        return loss, loss_dict, new_states, actions_hat
 
     def _forward_chunk_pair(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
         """Chunk-continuation: chunk n -> carry literal state -> chunk n+1."""
         batch_n = {k: v for k, v in batch.items() if not k.endswith("_n1")}
-        loss_n, loss_dict_n, states_n = self._forward_single(batch_n, carry=None)
+        loss_n, loss_dict_n, states_n, _ = self._forward_single(batch_n, carry=None)
 
         carry = detach_states(states_n) if self.config.sscp_detach else states_n
         # v9: inject carry-divergence noise so the boundary fusion (esp. the obs-driven gate)
@@ -664,7 +667,7 @@ class ACM2SSCPLiteralPolicy(PreTrainedPolicy):
                 batch[k + "_n1"] for k in self.config.image_features if k + "_n1" in batch
             ] or batch[OBS_IMAGES]
 
-        loss_n1, loss_dict_n1, _ = self._forward_single(batch_n1, carry=carry)
+        loss_n1, loss_dict_n1, _, _ = self._forward_single(batch_n1, carry=carry)
 
         total_loss = loss_n + loss_n1
         combined = {

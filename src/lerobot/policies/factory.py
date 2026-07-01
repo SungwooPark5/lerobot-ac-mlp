@@ -34,6 +34,9 @@ from lerobot.policies.acm2_sscp_literal.configuration_acm2_sscp_literal import A
 from lerobot.policies.acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_bimamba import (
     ACM2SSCPLiteralBiMambaConfig,
 )
+from lerobot.policies.acm2_sscp_literal_smooth.configuration_acm2_sscp_literal_smooth import (
+    ACM2SSCPLiteralSmoothConfig,
+)
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.groot.configuration_groot import GrootConfig
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
@@ -95,6 +98,12 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         )
 
         return ACM2SSCPLiteralBiMambaPolicy
+    elif name == "acm2_sscp_literal_smooth":
+        from lerobot.policies.acm2_sscp_literal_smooth.modeling_acm2_sscp_literal_smooth import (
+            ACM2SSCPLiteralSmoothPolicy,
+        )
+
+        return ACM2SSCPLiteralSmoothPolicy
     elif name == "vqbet":
         from lerobot.policies.vqbet.modeling_vqbet import VQBeTPolicy
 
@@ -163,6 +172,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACM2SSCPLiteralConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal_bimamba":
         return ACM2SSCPLiteralBiMambaConfig(**kwargs)
+    elif policy_type == "acm2_sscp_literal_smooth":
+        return ACM2SSCPLiteralSmoothConfig(**kwargs)
     elif policy_type == "vqbet":
         return VQBeTConfig(**kwargs)
     elif policy_type == "pi0":
@@ -300,7 +311,7 @@ def make_pre_post_processors(
         )
 
     elif isinstance(policy_cfg, ACM2SSCPLiteralConfig):
-        # Covers acm2_sscp_literal and its subclass acm2_sscp_literal_bimamba.
+        # Covers acm2_sscp_literal and its subclasses (acm2_sscp_literal_bimamba / _smooth).
         # Reuses eunji's ACM2 processor (normalization only; config-driven).
         from lerobot.policies.acm2.processor_acm2 import make_acm2_pre_post_processors
 
