@@ -268,8 +268,9 @@ def eval_policy(
         n_episodes: The number of episodes to evaluate.
         max_episodes_rendered: Maximum number of episodes to render into videos.
         videos_dir: Where to save rendered videos.
-        actions_dir: If set, save the per-episode executed action trajectories to
-            ``actions_dir / "actions.pt"`` (a list of (T, action_dim) CPU tensors, done-masked).
+        actions_dir: If set, save each episode's executed action trajectory to
+            ``actions_dir / "action_logs" / "episode_<idx:04d>.pt"`` (a (T, action_dim) done-masked
+            CPU tensor per episode).
         return_episode_data: Whether to return episode data for online training. Incorporates the data into
             the "episodes" key of the returned dictionary.
         start_seed: The first seed to use for the first individual rollout. For all subsequent rollouts the
@@ -424,10 +425,14 @@ def eval_policy(
     for thread in threads:
         thread.join()
 
-    # Save executed action trajectories as a .pt (list of (T, action_dim) CPU tensors).
+    # Save executed action trajectories: one .pt per episode under <actions_dir>/action_logs/,
+    # named episode_<idx:04d>.pt (idx matches the per_episode metrics order). Each file is a
+    # single (T, action_dim) done-masked CPU tensor.
     if actions_dir is not None:
-        actions_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(action_trajs[:n_episodes], actions_dir / "actions.pt")
+        action_logs_dir = actions_dir / "action_logs"
+        action_logs_dir.mkdir(parents=True, exist_ok=True)
+        for i, traj in enumerate(action_trajs[:n_episodes]):
+            torch.save(traj, action_logs_dir / f"episode_{i:04d}.pt")
 
     # Compile eval info.
     info = {
@@ -665,9 +670,10 @@ def run_one(
         task_videos_dir = videos_dir / f"{task_group}_{task_id}"
         task_videos_dir.mkdir(parents=True, exist_ok=True)
 
-    task_actions_dir = None
-    if actions_dir is not None:
-        task_actions_dir = actions_dir / f"{task_group}_{task_id}"
+    # Actions are saved flat under <actions_dir>/action_logs/ (no per-task subdir) to match the
+    # expected episode_<idx>.pt layout. With multiple task_ids the episode indices would collide,
+    # so pass a task-specific actions_dir when evaluating more than one task.
+    task_actions_dir = actions_dir
 
     # Call the existing eval_one (assumed to return TaskMetrics-like dict)
     metrics = eval_one(
