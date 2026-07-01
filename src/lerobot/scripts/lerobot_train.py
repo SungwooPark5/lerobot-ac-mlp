@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 import logging
 import time
 from contextlib import nullcontext
@@ -51,6 +52,27 @@ from lerobot.utils.utils import (
     has_method,
     init_logging,
 )
+
+
+def _jsonable(d: dict) -> dict:
+    """Coerce a metrics dict to JSON-serializable scalars (drops tensors/arrays that can't reduce)."""
+    out = {}
+    for k, v in d.items():
+        if hasattr(v, "item"):
+            try:
+                v = v.item()
+            except Exception:
+                continue
+        if isinstance(v, (int, float, str, bool)) or v is None:
+            out[k] = v
+    return out
+
+
+def _append_jsonl(path, record: dict) -> None:
+    """Append one JSON record as a line to `path` (creates parent dir if needed)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(record, default=str) + "\n")
 
 
 def update_policy(
@@ -391,6 +413,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
         if is_log_step:
             logging.info(train_tracker)
+            # Persist train metrics to training_log.jsonl (read by v21 notebooks / status).
+            train_rec = {"step": step, **train_tracker.to_dict()}
+            if output_dict:
+                train_rec.update(_jsonable(output_dict))
+            _append_jsonl(cfg.output_dir / "training_log.jsonl", train_rec)
             if wandb_logger:
                 wandb_log_dict = train_tracker.to_dict()
                 if output_dict:
@@ -432,7 +459,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                         postprocessor=postprocessor,
                         n_episodes=cfg.eval.n_episodes,
                         videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
-                        max_episodes_rendered=4,
+                        max_episodes_rendered=0,  # do not save eval videos
                         start_seed=cfg.seed,
                         max_parallel_tasks=cfg.env.max_parallel_tasks,
                     )
@@ -442,6 +469,43 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 # optional: per-suite logging
                 for suite, suite_info in eval_info.items():
                     logging.info("Suite %s aggregated: %s", suite, suite_info)
+
+                # Persist eval results to disk (feeds v21 notebooks: eval_curve / status / metrics.json).
+                # Do this BEFORE the pops below mutate eval_info["overall"].
+                sr = aggregated.get("pc_success")
+                eval_dir = cfg.output_dir / "eval"
+                eval_dir.mkdir(parents=True, exist_ok=True)
+                (eval_dir / f"eval_step_{step_id}.json").write_text(
+                    json.dumps(eval_info, indent=2, default=str)
+                )
+                _append_jsonl(
+                    cfg.output_dir / "training_log.jsonl",
+                    {
+                        "step": step,
+                        "pc_success": sr,
+                        "avg_sum_reward": aggregated.get("avg_sum_reward"),
+                        "eval_s": aggregated.get("eval_s"),
+                    },
+                )
+                # rolling metrics.json summary (overall + per-step SR curve + best)
+                metrics_path = cfg.output_dir / "metrics.json"
+                try:
+                    summary = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
+                except Exception:
+                    summary = {}
+                curve = summary.get("eval_curve", {})
+                curve[str(step)] = sr
+                valid = [v for v in curve.values() if v is not None]
+                summary.update(
+                    {
+                        "overall": eval_info["overall"],
+                        "eval_curve": curve,
+                        "last_step": step,
+                        "best_pc_success": max(valid) if valid else None,
+                        "steps": cfg.steps,
+                    }
+                )
+                metrics_path.write_text(json.dumps(summary, indent=2, default=str))
 
                 # meters/tracker
                 eval_metrics = {
@@ -463,7 +527,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 if wandb_logger:
                     wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
                     wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
-                    wandb_logger.log_video(eval_info["overall"]["video_paths"][0], step, mode="eval")
+                    vids = eval_info["overall"].get("video_paths") or []
+                    if vids:
+                        wandb_logger.log_video(vids[0], step, mode="eval")
 
             accelerator.wait_for_everyone()
 
