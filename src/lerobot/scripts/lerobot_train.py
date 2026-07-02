@@ -304,15 +304,24 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             raise ValueError("use_chunk_pairs=True requires policy.chunk_size to be set.")
         from lerobot.datasets.chunk_pair_dataset import ChunkPairDataset
 
+        # Overlap-add training: when the policy trains the crossfaded overlap
+        # (sscp_overlap_train_weight > 0), pair chunk n+1 at offset hop = K - overlap so its
+        # carried head overlaps chunk n's tail on the SAME wall-clock steps. Otherwise adjacent.
+        _ov = getattr(cfg.policy, "sscp_overlap", 0) or 0
+        _otw = getattr(cfg.policy, "sscp_overlap_train_weight", 0.0) or 0.0
+        pair_offset = (chunk_size - _ov) if (_ov > 0 and _otw > 0.0) else chunk_size
+
         dataset = ChunkPairDataset(
             base_dataset=dataset,
             chunk_size=chunk_size,
             dataset_stats=dataset.meta.stats,
+            pair_offset=pair_offset,
         )
         if is_main_process:
             logging.info(
                 f"ChunkPairDataset active: {len(dataset)} pairs "
-                f"(chunk_size={chunk_size}, sscp_p_carry={getattr(cfg.policy, 'sscp_p_carry', 'N/A')})"
+                f"(chunk_size={chunk_size}, pair_offset={pair_offset}, "
+                f"sscp_p_carry={getattr(cfg.policy, 'sscp_p_carry', 'N/A')})"
             )
 
     # create dataloader for offline training

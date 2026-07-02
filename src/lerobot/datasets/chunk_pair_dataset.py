@@ -46,9 +46,14 @@ class ChunkPairDataset(Dataset):
         chunk_size: int,
         dataset_stats: dict[str, dict[str, Tensor]] | None = None,
         load_n1_images: bool = True,
+        pair_offset: int | None = None,
     ):
         self.base = base_dataset
         self.chunk_size = chunk_size
+        # Frame offset of chunk n+1 from chunk n. Default = chunk_size (adjacent, non-overlapping).
+        # For overlap-add training set pair_offset = chunk_size - overlap so chunk n's tail and
+        # chunk n+1's carried head predict the SAME wall-clock steps (see the overlap policy).
+        self.pair_offset = pair_offset if pair_offset is not None else chunk_size
         self.dataset_stats = dataset_stats or {}
         # v9 fix: include chunk n+1's OWN images (normalized to match the base keys).
         # v8 left these out and the policy fell back to chunk_n's *stale* images, which
@@ -111,7 +116,7 @@ class ChunkPairDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         i = self.valid_indices[idx]
         chunk_n = self.base[i]
-        chunk_n1 = self.base[i + self.chunk_size]
+        chunk_n1 = self.base[i + self.pair_offset]
 
         result: dict[str, Any] = dict(chunk_n)
 
