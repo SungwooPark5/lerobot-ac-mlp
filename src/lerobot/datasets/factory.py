@@ -27,7 +27,7 @@ from lerobot.datasets.lerobot_dataset import (
 )
 from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 from lerobot.datasets.transforms import ImageTransforms
-from lerobot.utils.constants import ACTION, OBS_PREFIX, REWARD
+from lerobot.utils.constants import ACTION, OBS_PREFIX, OBS_STATE, REWARD
 
 IMAGENET_STATS = {
     "mean": [[[0.485]], [[0.456]], [[0.406]]],  # (c,1,1)
@@ -61,6 +61,12 @@ def resolve_delta_timestamps(
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
         if key.startswith(OBS_PREFIX) and cfg.observation_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.observation_delta_indices]
+        # Per-key override: policies that need FUTURE proprio frames without loading a
+        # frame-stack of images (e.g. acm2_dro teacher-forced streaming) expose
+        # `state_delta_indices`, applied to the state key only.
+        state_delta_indices = getattr(cfg, "state_delta_indices", None)
+        if key == OBS_STATE and state_delta_indices is not None:
+            delta_timestamps[key] = [i / ds_meta.fps for i in state_delta_indices]
 
     if len(delta_timestamps) == 0:
         delta_timestamps = None

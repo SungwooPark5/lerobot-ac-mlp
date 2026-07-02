@@ -30,6 +30,7 @@ from lerobot.datasets.utils import dataset_to_policy_features
 from lerobot.envs.configs import EnvConfig
 from lerobot.envs.utils import env_to_policy_features
 from lerobot.policies.act.configuration_act import ACTConfig
+from lerobot.policies.acm2_dro.configuration_acm2_dro import ACM2DROConfig
 from lerobot.policies.acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig
 from lerobot.policies.acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_bimamba import (
     ACM2SSCPLiteralBiMambaConfig,
@@ -103,6 +104,10 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.act.modeling_act import ACTPolicy
 
         return ACTPolicy
+    elif name == "acm2_dro":
+        from lerobot.policies.acm2_dro.modeling_acm2_dro import ACM2DROPolicy
+
+        return ACM2DROPolicy
     elif name == "acm2_sscp_literal":
         from lerobot.policies.acm2_sscp_literal.modeling_acm2_sscp_literal import ACM2SSCPLiteralPolicy
 
@@ -213,6 +218,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return DiffusionConfig(**kwargs)
     elif policy_type == "act":
         return ACTConfig(**kwargs)
+    elif policy_type == "acm2_dro":
+        return ACM2DROConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal":
         return ACM2SSCPLiteralConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal_bimamba":
@@ -361,6 +368,15 @@ def make_pre_post_processors(
         from lerobot.policies.diffusion.processor_diffusion import make_diffusion_pre_post_processors
 
         processors = make_diffusion_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACM2DROConfig):
+        # DRO streaming observer — normalization-only processing, same as the acm2 family.
+        from lerobot.policies.acm2.processor_acm2 import make_acm2_pre_post_processors
+
+        processors = make_acm2_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

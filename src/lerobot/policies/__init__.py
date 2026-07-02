@@ -14,6 +14,7 @@
 
 from .act.configuration_act import ACTConfig as ACTConfig
 from .acm2.configuration_acm2 import ACM2Config as ACM2Config
+from .acm2_dro.configuration_acm2_dro import ACM2DROConfig as ACM2DROConfig
 from .acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig as ACM2SSCPLiteralConfig
 from .acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_bimamba import (
     ACM2SSCPLiteralBiMambaConfig as ACM2SSCPLiteralBiMambaConfig,
@@ -49,6 +50,7 @@ from .xvla.configuration_xvla import XVLAConfig as XVLAConfig
 __all__ = [
     "ACTConfig",
     "ACM2Config",
+    "ACM2DROConfig",
     "ACM2SSCPLiteralConfig",
     "ACM2SSCPLiteralBiMambaConfig",
     "ACM2SSCPLiteralSmoothConfig",
