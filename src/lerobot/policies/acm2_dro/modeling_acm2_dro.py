@@ -71,6 +71,8 @@ class ACM2DROPolicy(PreTrainedPolicy):
         self._enc_ctx = None
         self._dec_tokens = None
         self._prev_obs_pred = None
+        self._prev_o = None          # for Δ-proprio tokens
+        self._prev_action = None     # for action-feedback tokens
         self._innov_trace = []       # per-step (B,) innovation norms, for the gate figure
         self._gate_trace = []        # per-step (B,) bool triggers
         if not self.config.dro_stream:
@@ -148,6 +150,7 @@ class ACM2DROPolicy(PreTrainedPolicy):
             self._enc_ctx = self.model.encoder_context_inference(batch)
             self._dec_tokens = pos[0].expand(B, 1, -1).to(o.dtype)
             self._prev_obs_pred = None
+            self._prev_o = o
             self._innov_trace.append(torch.zeros(B, device=o.device))
             self._gate_trace.append(torch.zeros(B, dtype=torch.bool, device=o.device))
         else:
@@ -169,12 +172,17 @@ class ACM2DROPolicy(PreTrainedPolicy):
                     self._enc_ctx = torch.where(trig.view(B, 1, 1), fresh, self._enc_ctx)
             self._gate_trace.append(trig)
 
-            p_k = self.model.proprio_token(o, self._k, e)          # (B, 1, D)
+            delta = (o - self._prev_o) if cfg.dro_proprio_delta else None
+            prev_a = self._prev_action if cfg.dro_feed_action else None
+            p_k = self.model.proprio_token(o, self._k, e, delta, prev_a)  # (B, 1, D)
             q_k = pos[self._k].expand(B, 1, -1).to(o.dtype)
             self._dec_tokens = torch.cat([self._dec_tokens, p_k, q_k], dim=1)
+            self._prev_o = o
 
         last = self.model.scan_last(self._enc_ctx, self._dec_tokens)  # (B, D)
         action = self.model.action_head(last)
+        if cfg.dro_feed_action:
+            self._prev_action = action  # normalized, matching teacher-forced GT actions
         if cfg.dro_innovation:
             self._prev_obs_pred = self.model.obs_head(last)
 
@@ -214,6 +222,10 @@ class DROACM2(ACM2):
             state_dim = config.robot_state_feature.shape[0]
             self.proprio_proj = nn.Linear(state_dim, config.dim_model)
             self.proprio_type_embed = nn.Parameter(torch.zeros(config.dim_model))
+            if config.dro_proprio_delta:
+                self.delta_proj = nn.Linear(state_dim, config.dim_model)
+            if config.dro_feed_action:
+                self.act_fb_proj = nn.Linear(config.action_feature.shape[0], config.dim_model)
             if config.dro_innovation:
                 self.obs_head = nn.Linear(config.dim_model, state_dim)
                 self.innov_proj = nn.Linear(state_dim, config.dim_model)
@@ -282,13 +294,18 @@ class DROACM2(ACM2):
         )
         return self._encoder_context(batch, latent, state)
 
-    def proprio_token(self, state: Tensor, k, innov: Tensor | None = None) -> Tensor:
+    def proprio_token(self, state: Tensor, k, innov: Tensor | None = None,
+                      delta: Tensor | None = None, prev_action: Tensor | None = None) -> Tensor:
         """Measured-proprio token(s) at chunk position(s) k. state (B,Ds)→(B,1,D) or
         (B,K',Ds)→(B,K',D) with k an index tensor of shape (K',)."""
         pos = self.decoder_pos_embed.weight[k]  # (D,) or (K', D)
         tok = self.proprio_proj(state) + pos + self.proprio_type_embed
         if innov is not None:
             tok = tok + self.innov_proj(innov)
+        if delta is not None:
+            tok = tok + self.delta_proj(delta)
+        if prev_action is not None:
+            tok = tok + self.act_fb_proj(prev_action)
         if tok.ndim == 2:
             tok = tok.unsqueeze(1)
         return tok
@@ -303,14 +320,26 @@ class DROACM2(ACM2):
         seq = self._run_decoder(torch.cat([enc_ctx, dec_tokens], dim=1))
         return self.decoder.norm(seq[:, -1])
 
-    def _decode_stream(self, enc_ctx: Tensor, proprio: Tensor, innov: Tensor | None):
-        """Teacher-forced interleaved decode. proprio (B,K,Ds) → query outs (B,K,D), ô (B,K,Ds)|None."""
+    def _decode_stream(self, enc_ctx: Tensor, proprio: Tensor, innov: Tensor | None,
+                       actions: Tensor | None = None):
+        """Teacher-forced interleaved decode. proprio (B,K,Ds) → query outs (B,K,D), ô (B,K,Ds)|None.
+        actions (B,K,Da): GT chunk for action-feedback tokens (act_prev[k] = actions[k-1])."""
         B, K, _ = proprio.shape
         D = self.config.dim_model
         pos = self.decoder_pos_embed.weight  # (K, D)
         q = pos.unsqueeze(0).expand(B, K, D)
         ks = torch.arange(K, device=proprio.device)
-        p = self.proprio_token(proprio, ks, innov)  # (B, K, D); index 0 unused
+        delta = None
+        if self.config.dro_proprio_delta:
+            delta = torch.zeros_like(proprio)
+            delta[:, 1:] = proprio[:, 1:] - proprio[:, :-1]
+        act_prev = None
+        if self.config.dro_feed_action:
+            da = self.config.action_feature.shape[0]
+            act_prev = proprio.new_zeros(B, K, da)
+            if actions is not None:
+                act_prev[:, 1:] = actions[:, : K - 1]
+        p = self.proprio_token(proprio, ks, innov, delta, act_prev)  # (B, K, D); index 0 unused
         dec = q.new_zeros(B, 2 * K - 1, D)
         dec[:, 0::2] = q
         dec[:, 1::2] = p[:, 1:]
@@ -367,12 +396,13 @@ class DROACM2(ACM2):
 
         teacher = self._augment_teacher(states) if self.training else states
 
-        out, obs_pred = self._decode_stream(enc_ctx, teacher, innov=None)
+        gt_actions = batch.get(ACTION)  # teacher-forced action feedback (None-safe)
+        out, obs_pred = self._decode_stream(enc_ctx, teacher, innov=None, actions=gt_actions)
         if self.config.dro_innovation:
             # Two-pass: innovation e_k = o_k − ô_k, where ô_k was predicted at q_{k-1}.
             e = torch.zeros_like(teacher)
             e[:, 1:] = teacher[:, 1:] - obs_pred[:, :-1].detach()
-            out, obs_pred = self._decode_stream(enc_ctx, teacher, innov=e)
+            out, obs_pred = self._decode_stream(enc_ctx, teacher, innov=e, actions=gt_actions)
 
         actions = self.action_head(out)
         return actions, (mu, log_sigma_x2), obs_pred
@@ -389,11 +419,17 @@ class DROACM2(ACM2):
         B = state.shape[0]
         pos = self.decoder_pos_embed.weight
         dec = pos[0].expand(B, 1, -1).to(state.dtype)
-        actions, prev_pred = [], None
+        actions, prev_pred, prev_state = [], None, state
         for k in range(self.config.chunk_size):
             if k > 0:
                 p_state = prev_pred if prev_pred is not None else state
-                dec = torch.cat([dec, self.proprio_token(p_state, k), pos[k].expand(B, 1, -1)], dim=1)
+                delta = (p_state - prev_state) if self.config.dro_proprio_delta else None
+                prev_a = actions[-1] if self.config.dro_feed_action else None
+                dec = torch.cat(
+                    [dec, self.proprio_token(p_state, k, None, delta, prev_a), pos[k].expand(B, 1, -1)],
+                    dim=1,
+                )
+                prev_state = p_state
             last = self.scan_last(enc_ctx, dec)
             actions.append(self.action_head(last))
             if self.config.dro_innovation:

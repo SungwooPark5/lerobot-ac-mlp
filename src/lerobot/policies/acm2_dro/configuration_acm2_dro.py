@@ -48,6 +48,16 @@ class ACM2DROConfig(ACM2Config):
     #   every  every step (full closed-loop upper bound; backbone cost per step)
     dro_vision_refresh: str = "chunk"
 
+    # ── Layer A extensions (idea variants for the model zoo) ────────────────────
+    # Δ-proprio token input: feed o_k − o_{k−1} alongside o_k — a velocity signal in
+    # which a disturbance shows up as an immediate spike.
+    dro_proprio_delta: bool = False
+    # Action-feedback token input: feed the previously EXECUTED action a_{k−1} with the
+    # measured o_k, letting the model form a commanded-vs-measured tracking error
+    # (classic feedback-control structure). Trained teacher-forced with GT actions;
+    # inference feeds the policy's own emitted actions (standard exposure bias).
+    dro_feed_action: bool = False
+
     # ── Layer B: innovation observer ────────────────────────────────────────────
     dro_innovation: bool = False
     dro_obs_loss_weight: float = 0.5   # aux L1 weight for next-proprio prediction
@@ -69,6 +79,8 @@ class ACM2DROConfig(ACM2Config):
                 raise ValueError("dro_stream is incompatible with whole-chunk action self-attention.")
             if self.temporal_ensemble_coeff is not None:
                 raise ValueError("dro_stream replaces temporal ensembling; disable it.")
+        if (self.dro_proprio_delta or self.dro_feed_action) and not self.dro_stream:
+            raise ValueError("dro_proprio_delta / dro_feed_action need dro_stream=true.")
         if self.dro_vision_refresh == "gate" and not (self.dro_innovation and self.dro_gate_tau > 0):
             raise ValueError("dro_vision_refresh='gate' needs dro_innovation=true and dro_gate_tau>0.")
         if self.dro_gate_tau > 0 and not self.dro_innovation:

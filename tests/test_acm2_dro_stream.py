@@ -78,6 +78,62 @@ def test_stream_equals_teacher_forced():
     assert err < 1e-4, f"stream vs teacher-forced mismatch: max|Δ|={err:.2e}"
 
 
+def test_stream_equals_teacher_forced_delta():
+    """Golden test with Δ-proprio tokens on."""
+    policy = _policy(dro_proprio_delta=True)
+    torch.manual_seed(4)
+    states = torch.randn(B, K, DS).cuda()
+    env = torch.randn(B, DE).cuda()
+    with torch.no_grad():
+        acts_tf, _, _ = policy.model(_obs_batch(states, env))
+    policy.reset()
+    stream = torch.stack(
+        [policy.select_action(_obs_batch(states[:, k], env)) for k in range(K)], dim=1
+    )
+    err = (acts_tf - stream).abs().max().item()
+    assert err < 1e-4, f"delta stream vs teacher-forced mismatch: max|Δ|={err:.2e}"
+
+
+def test_stream_equals_teacher_forced_action_feedback():
+    """Golden test with action-feedback tokens: teacher-forcing the stream's own emitted
+    actions must reproduce the stream exactly."""
+    policy = _policy(dro_feed_action=True)
+    torch.manual_seed(5)
+    states = torch.randn(B, K, DS).cuda()
+    env = torch.randn(B, DE).cuda()
+    policy.reset()
+    stream = torch.stack(
+        [policy.select_action(_obs_batch(states[:, k], env)) for k in range(K)], dim=1
+    )
+    batch = _obs_batch(states, env)
+    batch[ACTION] = stream  # feed the emitted actions back as GT
+    with torch.no_grad():
+        acts_tf, _, _ = policy.model(batch)
+    err = (acts_tf - stream).abs().max().item()
+    assert err < 1e-4, f"action-feedback stream vs teacher-forced mismatch: max|Δ|={err:.2e}"
+
+
+def test_full_variant_trains():
+    """dro_full = innovation + delta + action feedback + Layer C — loss and grads finite."""
+    policy = _policy(
+        dro_innovation=True, dro_proprio_delta=True, dro_feed_action=True,
+        dro_train_state_noise=0.05, dro_train_push_prob=0.3,
+    )
+    policy.train()
+    torch.manual_seed(6)
+    batch = {
+        OBS_STATE: torch.randn(B, K, DS).cuda(),
+        OBS_ENV_STATE: torch.randn(B, DE).cuda(),
+        ACTION: torch.randn(B, K, DA).cuda(),
+        "action_is_pad": torch.zeros(B, K, dtype=torch.bool).cuda(),
+        f"{OBS_STATE}_is_pad": torch.zeros(B, K, dtype=torch.bool).cuda(),
+    }
+    loss, loss_dict = policy.forward(batch)
+    assert torch.isfinite(loss) and "obs_l1" in loss_dict
+    loss.backward()
+    assert all(torch.isfinite(p.grad).all() for p in policy.parameters() if p.grad is not None)
+
+
 def test_chunk_rollover_reencodes():
     """After chunk_size steps the stream restarts a fresh context without errors."""
     policy = _policy()
