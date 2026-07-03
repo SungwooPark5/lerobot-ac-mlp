@@ -222,15 +222,17 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         eval_env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
 
     # DRO split eval: on a DRO env (lerobot/envs/dro_perturb.py), split each eval budget
-    # into a CLEAN half and a DISTURBED half on the same env instances / same seeds
-    # (paired comparison), via the wrapper's runtime toggle.
+    # into a CLEAN quarter + one quarter PER disturbance type, all on the same env
+    # instances with the same seeds (paired comparison), via the wrapper's runtime
+    # mode override (dro_set_mode).
     dro_split_eval = eval_env is not None and "DRO" in (getattr(cfg.env, "task", "") or "")
+    DRO_EVAL_TYPES = ["push", "teleport", "obsnoise"]
 
-    def _dro_set_enabled(enabled: bool):
+    def _dro_set_mode(mode):
         for suite in eval_env.values():
             for vec in suite.values():
                 try:
-                    vec.call("dro_set_enabled", enabled)
+                    vec.call("dro_set_mode", mode)
                 except Exception:  # noqa: BLE001 — non-DRO tasks in a mixed suite
                     pass
 
@@ -471,48 +473,48 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             if is_main_process:
                 step_id = get_step_identifier(step, cfg.steps)
                 logging.info(f"Eval policy at step {step}")
-                n_eval = cfg.eval.n_episodes // 2 if dro_split_eval else cfg.eval.n_episodes
-                with torch.no_grad(), accelerator.autocast():
-                    if dro_split_eval:
-                        _dro_set_enabled(False)  # clean half
-                    eval_info = eval_policy_all(
+                if dro_split_eval:
+                    # clean + one quarter per disturbance type (clean takes the remainder)
+                    n_each = cfg.eval.n_episodes // (1 + len(DRO_EVAL_TYPES))
+                    n_eval = cfg.eval.n_episodes - n_each * len(DRO_EVAL_TYPES)
+                else:
+                    n_eval = cfg.eval.n_episodes
+
+                def _run_eval(n_episodes, suffix=""):
+                    return eval_policy_all(
                         envs=eval_env,  # dict[suite][task_id] -> vec_env
                         policy=accelerator.unwrap_model(policy),
                         env_preprocessor=env_preprocessor,
                         env_postprocessor=env_postprocessor,
                         preprocessor=preprocessor,
                         postprocessor=postprocessor,
-                        n_episodes=n_eval,
-                        videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
+                        n_episodes=n_episodes,
+                        videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}{suffix}",
                         # actions saved to <videos_step_dir>/action_logs/episode_<idx:04d>.pt
-                        actions_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
+                        actions_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}{suffix}",
                         max_episodes_rendered=0,  # do not save eval videos
-                        start_seed=cfg.seed,
+                        start_seed=cfg.seed,  # SAME seeds across conditions → paired
                         max_parallel_tasks=cfg.env.max_parallel_tasks,
                     )
-                    eval_info_dro = None
+
+                dro_infos = {}
+                with torch.no_grad(), accelerator.autocast():
                     if dro_split_eval:
-                        _dro_set_enabled(True)  # disturbed half — SAME seeds (paired)
-                        eval_info_dro = eval_policy_all(
-                            envs=eval_env,
-                            policy=accelerator.unwrap_model(policy),
-                            env_preprocessor=env_preprocessor,
-                            env_postprocessor=env_postprocessor,
-                            preprocessor=preprocessor,
-                            postprocessor=postprocessor,
-                            n_episodes=cfg.eval.n_episodes - n_eval,
-                            videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}_dro",
-                            actions_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}_dro",
-                            max_episodes_rendered=0,
-                            start_seed=cfg.seed,
-                            max_parallel_tasks=cfg.env.max_parallel_tasks,
-                        )
+                        _dro_set_mode("none")  # clean quarter
+                    eval_info = _run_eval(n_eval)
+                    for cond in DRO_EVAL_TYPES if dro_split_eval else []:
+                        _dro_set_mode(cond)
+                        dro_infos[cond] = _run_eval(n_each, suffix=f"_dro_{cond}")
+                    if dro_split_eval:
+                        _dro_set_mode(None)  # restore the env-var config
                 # overall metrics (suite-agnostic)
                 aggregated = eval_info["overall"]
-                sr_dro = eval_info_dro["overall"].get("pc_success") if eval_info_dro else None
-                if eval_info_dro is not None:
+                dro_srs = {c: i["overall"].get("pc_success") for c, i in dro_infos.items()}
+                _dro_valid = [v for v in dro_srs.values() if v is not None]
+                sr_dro = sum(_dro_valid) / len(_dro_valid) if _dro_valid else None  # mean over types
+                if dro_infos:
                     # keep overall == clean SR (existing curves/ckpt selection stay comparable)
-                    eval_info["dro_overall"] = eval_info_dro["overall"]
+                    eval_info["dro_overall"] = {c: i["overall"] for c, i in dro_infos.items()}
 
                 # optional: per-suite logging
                 for suite, suite_info in eval_info.items():
@@ -531,7 +533,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     {
                         "step": step,
                         "pc_success": sr,
-                        **({"dro_pc_success": sr_dro} if eval_info_dro is not None else {}),
+                        **({"dro_pc_success": sr_dro} if dro_infos else {}),
+                        **{f"dro_{c}_pc_success": v for c, v in dro_srs.items()},
                         "avg_sum_reward": aggregated.get("avg_sum_reward"),
                         "eval_s": aggregated.get("eval_s"),
                     },
@@ -554,14 +557,20 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                         "steps": cfg.steps,
                     }
                 )
-                if eval_info_dro is not None:
+                if dro_infos:
                     dro_curve = summary.get("dro_eval_curve", {})
                     dro_curve[str(step)] = sr_dro
                     dro_valid = [v for v in dro_curve.values() if v is not None]
+                    type_curves = summary.get("dro_type_curves", {})
+                    for c, v in dro_srs.items():
+                        tc = type_curves.get(c, {})
+                        tc[str(step)] = v
+                        type_curves[c] = tc
                     summary.update(
                         {
-                            "dro_overall": eval_info_dro["overall"],
+                            "dro_overall": eval_info["dro_overall"],
                             "dro_eval_curve": dro_curve,
+                            "dro_type_curves": type_curves,
                             "best_dro_pc_success": max(dro_valid) if dro_valid else None,
                         }
                     )

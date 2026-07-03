@@ -123,6 +123,7 @@ class DROWrapper(gym.Wrapper):
         self._episode = 0
         self._n = 0
         self._t_dist = -1
+        self._runtime_type = None  # dro_set_mode override (None → env-var config)
         self._ep_type = "none"   # per-episode resolved type (mix picks one at reset)
         self._ep_mag = 0.0
         self._applied = False
@@ -133,6 +134,18 @@ class DROWrapper(gym.Wrapper):
         """Runtime clean/disturbed toggle — takes effect at the NEXT reset."""
         self._enabled = bool(enabled)
         return self._enabled
+
+    def dro_set_mode(self, mode) -> str:
+        """Runtime type override (takes effect at the NEXT reset).
+
+        mode: 'none'|'push'|'teleport'|'obsnoise'|'mix' — overrides DRO_TYPE;
+              None restores the env-var config. lerobot_train uses this to split one
+              eval budget into clean + per-type quarters on the same envs/seeds.
+        """
+        if mode is not None and mode not in ("none", "push", "teleport", "obsnoise", "mix"):
+            raise ValueError(f"dro_set_mode({mode!r}) invalid")
+        self._runtime_type = mode
+        return mode if mode is not None else self.dtype
 
     # ------------------------------------------------------------------ reset
     def reset(self, *, seed=None, **kwargs):
@@ -146,13 +159,14 @@ class DROWrapper(gym.Wrapper):
         self._rng = np.random.default_rng([self.base_seed, int(mix)])
         self._episode += 1
 
-        if self.dtype == "none" or not self._enabled:
+        cfg_type = self._runtime_type if self._runtime_type is not None else self.dtype
+        if cfg_type == "none" or not self._enabled:
             self._ep_type, self._ep_mag, self._t_dist = "none", 0.0, -1
         else:
-            if self.dtype == "mix":
+            if cfg_type == "mix":
                 self._ep_type = str(self._rng.choice(["push", "teleport", "obsnoise"]))
             else:
-                self._ep_type = self.dtype
+                self._ep_type = cfg_type
             if self._mag_override is not None:
                 self._ep_mag = float(self._mag_override)
             else:

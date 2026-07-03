@@ -273,6 +273,22 @@ def test_runtime_toggle_dro_set_enabled():
     assert np.linalg.norm(phys.data.qvel[:N_ROBOT]) > 0, "re-enabled wrapper must disturb again"
 
 
+def test_runtime_mode_override():
+    """dro_set_mode: 학습중 4-way split eval이 쓰는 타입 override (다음 reset부터)."""
+    env = _make(DRO_TYPE="mix", DRO_LEVEL=2, DRO_STEP=2)
+    w = _wrapper(env)
+    set_mode = env.get_wrapper_attr("dro_set_mode")
+    for mode in ("none", "push", "teleport", "obsnoise"):
+        set_mode(mode)
+        env.reset(seed=0)
+        assert w._ep_type == mode, f"mode {mode} not applied, got {w._ep_type}"
+        if mode != "none":
+            assert w._ep_mag == DRO.DRO_LEVELS[mode][2]
+    set_mode(None)  # env-var config(mix) 복원
+    env.reset(seed=0)
+    assert w._ep_type in ("push", "teleport", "obsnoise")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:
