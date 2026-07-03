@@ -221,6 +221,19 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             logging.info("Creating env")
         eval_env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
 
+    # DRO split eval: on a DRO env (lerobot/envs/dro_perturb.py), split each eval budget
+    # into a CLEAN half and a DISTURBED half on the same env instances / same seeds
+    # (paired comparison), via the wrapper's runtime toggle.
+    dro_split_eval = eval_env is not None and "DRO" in (getattr(cfg.env, "task", "") or "")
+
+    def _dro_set_enabled(enabled: bool):
+        for suite in eval_env.values():
+            for vec in suite.values():
+                try:
+                    vec.call("dro_set_enabled", enabled)
+                except Exception:  # noqa: BLE001 — non-DRO tasks in a mixed suite
+                    pass
+
     if is_main_process:
         logging.info("Creating policy")
     policy = make_policy(
@@ -458,7 +471,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             if is_main_process:
                 step_id = get_step_identifier(step, cfg.steps)
                 logging.info(f"Eval policy at step {step}")
+                n_eval = cfg.eval.n_episodes // 2 if dro_split_eval else cfg.eval.n_episodes
                 with torch.no_grad(), accelerator.autocast():
+                    if dro_split_eval:
+                        _dro_set_enabled(False)  # clean half
                     eval_info = eval_policy_all(
                         envs=eval_env,  # dict[suite][task_id] -> vec_env
                         policy=accelerator.unwrap_model(policy),
@@ -466,7 +482,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                         env_postprocessor=env_postprocessor,
                         preprocessor=preprocessor,
                         postprocessor=postprocessor,
-                        n_episodes=cfg.eval.n_episodes,
+                        n_episodes=n_eval,
                         videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
                         # actions saved to <videos_step_dir>/action_logs/episode_<idx:04d>.pt
                         actions_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
@@ -474,8 +490,29 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                         start_seed=cfg.seed,
                         max_parallel_tasks=cfg.env.max_parallel_tasks,
                     )
+                    eval_info_dro = None
+                    if dro_split_eval:
+                        _dro_set_enabled(True)  # disturbed half — SAME seeds (paired)
+                        eval_info_dro = eval_policy_all(
+                            envs=eval_env,
+                            policy=accelerator.unwrap_model(policy),
+                            env_preprocessor=env_preprocessor,
+                            env_postprocessor=env_postprocessor,
+                            preprocessor=preprocessor,
+                            postprocessor=postprocessor,
+                            n_episodes=cfg.eval.n_episodes - n_eval,
+                            videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}_dro",
+                            actions_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}_dro",
+                            max_episodes_rendered=0,
+                            start_seed=cfg.seed,
+                            max_parallel_tasks=cfg.env.max_parallel_tasks,
+                        )
                 # overall metrics (suite-agnostic)
                 aggregated = eval_info["overall"]
+                sr_dro = eval_info_dro["overall"].get("pc_success") if eval_info_dro else None
+                if eval_info_dro is not None:
+                    # keep overall == clean SR (existing curves/ckpt selection stay comparable)
+                    eval_info["dro_overall"] = eval_info_dro["overall"]
 
                 # optional: per-suite logging
                 for suite, suite_info in eval_info.items():
@@ -494,6 +531,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     {
                         "step": step,
                         "pc_success": sr,
+                        **({"dro_pc_success": sr_dro} if eval_info_dro is not None else {}),
                         "avg_sum_reward": aggregated.get("avg_sum_reward"),
                         "eval_s": aggregated.get("eval_s"),
                     },
@@ -516,6 +554,17 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                         "steps": cfg.steps,
                     }
                 )
+                if eval_info_dro is not None:
+                    dro_curve = summary.get("dro_eval_curve", {})
+                    dro_curve[str(step)] = sr_dro
+                    dro_valid = [v for v in dro_curve.values() if v is not None]
+                    summary.update(
+                        {
+                            "dro_overall": eval_info_dro["overall"],
+                            "dro_eval_curve": dro_curve,
+                            "best_dro_pc_success": max(dro_valid) if dro_valid else None,
+                        }
+                    )
                 metrics_path.write_text(json.dumps(summary, indent=2, default=str))
 
                 # meters/tracker

@@ -240,6 +240,39 @@ def test_log_jsonl():
         assert all(r["applied"] and r["type"] == "teleport" and r["t_dist"] == 3 for r in recs)
 
 
+def test_mix_mode_varies_type_per_episode():
+    env = _make(DRO_TYPE="mix", DRO_LEVEL=2, DRO_STEP=2)
+    w = _wrapper(env)
+    types = []
+    for s in range(12):
+        env.reset(seed=s)
+        assert w._ep_type in ("push", "teleport", "obsnoise")
+        assert w._ep_mag == DRO.DRO_LEVELS[w._ep_type][2], "mag must follow the chosen type"
+        types.append(w._ep_type)
+    assert len(set(types)) >= 2, f"mix must vary the type across episodes, got {types}"
+    # reproducibility: same reset seed → same choice
+    env.reset(seed=3)
+    t3 = w._ep_type
+    env.reset(seed=3)
+    assert w._ep_type == t3
+
+
+def test_runtime_toggle_dro_set_enabled():
+    env = _make(DRO_TYPE="push", DRO_LEVEL=3, DRO_STEP=2)
+    w = _wrapper(env)
+    phys = _physics(env)
+    # Toggle reachable THROUGH the wrapper chain — SyncVectorEnv.call resolves methods
+    # via get_wrapper_attr, so mirror that here.
+    env.get_wrapper_attr("dro_set_enabled")(False)
+    _run(env, 5, seed=0)
+    assert w._ep_type == "none" and w._t_dist == -1
+    assert np.all(phys.data.qvel == 0), "disabled wrapper must be perfectly clean"
+    env.get_wrapper_attr("dro_set_enabled")(True)
+    _run(env, 5, seed=0)
+    assert w._ep_type == "push"
+    assert np.linalg.norm(phys.data.qvel[:N_ROBOT]) > 0, "re-enabled wrapper must disturb again"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:

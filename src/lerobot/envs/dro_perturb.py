@@ -13,6 +13,13 @@ Disturbance types (DRO_TYPE):
     teleport  shift one random OBJECT free joint's xy by `mag` meters (object slips/moved)
     obsnoise  additive gaussian noise (sigma=`mag`) on obs["agent_pos"] for DRO_OBS_STEPS
               consecutive steps (sensor disturbance)
+    mix       per EPISODE, pick one of push/teleport/obsnoise uniformly (mag from
+              DRO_LEVEL for the chosen type) — used for training-time robust eval
+
+Runtime toggle: `dro_set_enabled(bool)` (reachable through the wrapper chain, e.g.
+vec_env.call("dro_set_enabled", False)) switches the wrapper clean/disturbed at the
+NEXT reset — lerobot_train uses it to split one eval budget into clean + disturbed
+halves on the same env instances (same seeds → paired comparison).
 
 Robot vs object dofs are auto-detected from the MuJoCo model: free joints (mjJNT_FREE)
 are objects, everything else is the robot. No per-task hardcoding.
@@ -100,17 +107,11 @@ class DROWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.dtype = os.environ.get("DRO_TYPE", "none").lower()
-        if self.dtype not in ("none", "push", "teleport", "obsnoise"):
-            raise ValueError(f"DRO_TYPE={self.dtype!r} not in none|push|teleport|obsnoise")
-        level = int(os.environ.get("DRO_LEVEL", "2"))
-        mag_env = os.environ.get("DRO_MAG")
-        if self.dtype == "none":
-            self.mag = 0.0
-        elif mag_env is not None:
-            self.mag = float(mag_env)
-        else:
-            self.mag = DRO_LEVELS[self.dtype][level]
-        self.level = level
+        if self.dtype not in ("none", "push", "teleport", "obsnoise", "mix"):
+            raise ValueError(f"DRO_TYPE={self.dtype!r} not in none|push|teleport|obsnoise|mix")
+        self.level = int(os.environ.get("DRO_LEVEL", "2"))
+        self._mag_override = os.environ.get("DRO_MAG")
+        self._enabled = True
         self.fixed_step = int(os.environ.get("DRO_STEP", "-1"))
         self.tmin = int(os.environ.get("DRO_TMIN", "80"))
         self.tmax = int(os.environ.get("DRO_TMAX", "240"))
@@ -122,9 +123,16 @@ class DROWrapper(gym.Wrapper):
         self._episode = 0
         self._n = 0
         self._t_dist = -1
+        self._ep_type = "none"   # per-episode resolved type (mix picks one at reset)
+        self._ep_mag = 0.0
         self._applied = False
         self._reset_seed = None
         self._warned = False
+
+    def dro_set_enabled(self, enabled: bool) -> bool:
+        """Runtime clean/disturbed toggle — takes effect at the NEXT reset."""
+        self._enabled = bool(enabled)
+        return self._enabled
 
     # ------------------------------------------------------------------ reset
     def reset(self, *, seed=None, **kwargs):
@@ -138,33 +146,42 @@ class DROWrapper(gym.Wrapper):
         self._rng = np.random.default_rng([self.base_seed, int(mix)])
         self._episode += 1
 
-        if self.dtype == "none":
-            self._t_dist = -1
-        elif self.fixed_step >= 0:
-            self._t_dist = self.fixed_step
+        if self.dtype == "none" or not self._enabled:
+            self._ep_type, self._ep_mag, self._t_dist = "none", 0.0, -1
         else:
-            self._t_dist = int(self._rng.integers(self.tmin, self.tmax + 1))
+            if self.dtype == "mix":
+                self._ep_type = str(self._rng.choice(["push", "teleport", "obsnoise"]))
+            else:
+                self._ep_type = self.dtype
+            if self._mag_override is not None:
+                self._ep_mag = float(self._mag_override)
+            else:
+                self._ep_mag = DRO_LEVELS[self._ep_type][self.level]
+            if self.fixed_step >= 0:
+                self._t_dist = self.fixed_step
+            else:
+                self._t_dist = int(self._rng.integers(self.tmin, self.tmax + 1))
         return self.env.reset(seed=seed, **kwargs)
 
     # ------------------------------------------------------------------- step
     def step(self, action):
         # Physics disturbances fire BEFORE the sim step at t_dist so the policy first
         # sees the disturbed state in the observation returned for this step.
-        if self.dtype in ("push", "teleport") and not self._applied and self._n == self._t_dist:
+        if self._ep_type in ("push", "teleport") and not self._applied and self._n == self._t_dist:
             ok = self._apply_physics_disturbance()
             self._applied = True
             self._log_episode(ok)
 
         obs, reward, terminated, truncated, info = self.env.step(action)
 
-        if self.dtype == "obsnoise" and self._t_dist >= 0 and self._n >= self._t_dist:
+        if self._ep_type == "obsnoise" and self._t_dist >= 0 and self._n >= self._t_dist:
             if not self._applied:
                 self._applied = True
                 self._log_episode(True)
             if self._n < self._t_dist + self.obs_steps:
                 obs = self._noisy_obs(obs)
 
-        info["dro_type"] = self.dtype
+        info["dro_type"] = self._ep_type
         info["dro_step"] = self._t_dist
         info["dro_active"] = bool(self._applied and self._n >= self._t_dist)
         self._n += 1
@@ -180,21 +197,21 @@ class DROWrapper(gym.Wrapper):
             return False
         try:
             robot_dofs, free_qposadr = _joint_layout(phys)
-            if self.dtype == "push":
+            if self._ep_type == "push":
                 if len(robot_dofs) == 0:
                     raise RuntimeError("no robot dofs detected")
                 d = self._rng.standard_normal(len(robot_dofs))
-                d *= self.mag / (np.linalg.norm(d) + 1e-9)
+                d *= self._ep_mag / (np.linalg.norm(d) + 1e-9)
                 qvel = np.asarray(phys.data.qvel)
                 qvel[robot_dofs] += d
                 phys.data.qvel[:] = qvel
-            elif self.dtype == "teleport":
+            elif self._ep_type == "teleport":
                 if len(free_qposadr) == 0:
                     raise RuntimeError("no object free joint detected")
                 adr = int(self._rng.choice(free_qposadr))
                 theta = self._rng.uniform(0.0, 2.0 * np.pi)
-                phys.data.qpos[adr] += self.mag * np.cos(theta)
-                phys.data.qpos[adr + 1] += self.mag * np.sin(theta)
+                phys.data.qpos[adr] += self._ep_mag * np.cos(theta)
+                phys.data.qpos[adr + 1] += self._ep_mag * np.sin(theta)
             _forward(phys)
             return True
         except Exception as e:  # noqa: BLE001 — a failed injection must not kill the eval
@@ -205,7 +222,7 @@ class DROWrapper(gym.Wrapper):
 
     def _noisy_obs(self, obs):
         if isinstance(obs, dict) and "agent_pos" in obs:
-            noise = self._rng.normal(0.0, self.mag, size=np.asarray(obs["agent_pos"]).shape)
+            noise = self._rng.normal(0.0, self._ep_mag, size=np.asarray(obs["agent_pos"]).shape)
             obs = dict(obs)
             obs["agent_pos"] = obs["agent_pos"] + noise.astype(obs["agent_pos"].dtype)
         elif not self._warned:
@@ -223,9 +240,9 @@ class DROWrapper(gym.Wrapper):
             rec = {
                 "episode": self._episode - 1,
                 "reset_seed": self._reset_seed,
-                "type": self.dtype,
+                "type": self._ep_type,
                 "level": self.level,
-                "mag": self.mag,
+                "mag": self._ep_mag,
                 "t_dist": self._t_dist,
                 "applied": ok,
             }
