@@ -112,12 +112,13 @@ FINAL_LABELS = {
 TRAIN_TAGS = ["act", "diffusion", "smolvla", "acm2", "acm", "ours"]
 
 # ── 그룹 (노트북 1개 = 그룹 1개) ──────────────────────────────────────────────
-#   OURS  = 우리 모델 + 직접 대조군(acm: 같은 백본 carry off).
-#           "plain Mamba 대비 개선"이 헤드라인 주장 → acm 없이는 그 수치를 못 씀.
-GROUP_OURS     = ["acm", OURS]                              # 01/02  (2 x 4seed = 8잡)
-GROUP_BASELINE = ["act", "diffusion", "smolvla", "acm2"]    # 03/04  (16잡) + act_te(eval only)
-GROUP_ABLATION = ["acm_carry", "acm_bimamba", "acm_s7"]     # 05/06  (12잡)
-TRAIN_ALL      = TRAIN_TAGS                                 # 전부   (24잡)
+GROUP_OURS     = [OURS]                                     # 01/02  우리 모델      (4잡)
+GROUP_ACM      = ["acm"]                                    # 03/04  ★직접 대조군   (4잡)
+GROUP_BASELINE = ["act", "diffusion", "smolvla", "acm2"]    # 05/06  외부 baseline (16잡) + act_te(eval only)
+GROUP_ABLATION = ["acm_carry", "acm_bimamba", "acm_s7"]     # 07/08  사다리 나머지 (12잡)
+TRAIN_ALL      = TRAIN_TAGS                                 # 전부                 (24잡)
+# ★ acm = 같은 백본에서 carry 를 끈 것. "plain Mamba 대비 개선"이 헤드라인 주장이라
+#   이 수치가 없으면 그 주장에 분모가 없다 → ours 다음으로 우선순위 높음.
 
 # ── Ablation 사다리 (논문 필수: 기여 3개를 각각 분리) ──────────────────────────
 #   acm(바닥) → +carry → +BiMamba → +MOSAIC(=ours).  acm_s7 = MOSAIC 을 BiMamba 없이(직교성 확인)

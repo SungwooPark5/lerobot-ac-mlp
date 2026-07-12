@@ -14,21 +14,23 @@
 
 예외: `diffusion` / `smolvla` 만 **각자 원 논문 lr(1e-4)** — 남의 방법을 우리 lr 로 깎으면 baseline 이 불공정.
 
-## 노트북 (그룹별 분리)
+## 노트북 (모델 그룹마다 학습/eval 이 따로)
 
-| | 노트북 | 모델 | 잡/run |
-|---|---|---|---|
-| **preflight** | `00_smoke` | — | CUDA·mamba_ssm·**carry parity 테스트**·dry-run |
-| **★우리 모델** | `01_train_ours` → `02_eval_ours` | `acm` + **`ours`** | 8잡 / 40 run |
-| **baseline** | `03_train_baseline` → `04_eval_baseline` | `act`·`diffusion`·`smolvla`·`acm2` (+`act_te` eval만) | 16잡 / 100 run |
-| **ablation** | `05_train_ablation` → `06_eval_ablation` | `acm_carry`·`acm_bimamba`·`acm_s7` (+표) | 12잡 / 60 run |
-| **리포트** | `07_report_sr` | 전 모델 SR 표·그림 (Table 1) | — |
-| | `08_report_jerk` | 떨림 — 경계/내부 jerk, SPARC, **경계정렬 jerk 프로파일**(헤드라인 그림) | — |
-| | `09_efficiency` | latency·VRAM vs K (어텐션 O(L²) vs Mamba O(L)). **학습 불필요** | — |
-| **보조** | `20_train_libero_seed{0-3}` · `21_eval_libero` · `21b_*` | LIBERO-10 | — |
+| | 학습 | eval | 모델 | 잡 / run |
+|---|---|---|---|---|
+| preflight | `00_smoke` | — | — | CUDA·mamba_ssm·**carry parity 테스트**·dry-run |
+| **★우리 모델** | `01_train_ours` | `02_eval_ours` | **`ours`** | 4잡 / 20 run |
+| **★대조군** | `03_train_acm` | `04_eval_acm` | `acm` (carry off) | 4잡 / 20 run |
+| baseline | `05_train_baseline` | `06_eval_baseline` | `act`·`diffusion`·`smolvla`·`acm2` (+`act_te` eval만) | 16잡 / 100 run |
+| ablation | `07_train_ablation` | `08_eval_ablation` | `acm_carry`·`acm_bimamba`·`acm_s7` (+표) | 12잡 / 60 run |
+| 리포트 | — | `09_report_sr` | 전 모델 SR 표·그림 (Table 1) | — |
+| | — | `10_report_jerk` | 떨림 — 경계/내부 jerk, SPARC, **경계정렬 jerk 프로파일**(헤드라인 그림) | — |
+| | — | `11_efficiency` | latency·VRAM vs K (어텐션 O(L²) vs Mamba O(L)). **학습 불필요** | — |
+| 보조 | `20_train_libero_seed{0-3}` | `21_eval_libero` · `21b_*` | LIBERO-10 | — |
 
-**`01` 의 `acm` 은 빼지 말 것.** 우리 헤드라인 주장이 "plain Mamba 디코더 대비 개선"이라
-같은 백본에서 carry 를 끈 `acm` 이 그 수치의 분모다. 없으면 표에 쓸 숫자가 안 나온다.
+**`01`(ours) 다음은 `03`(acm).** 우리 헤드라인 주장이 "plain Mamba 디코더 대비 [XX]p 개선"이라,
+같은 백본에서 carry 를 끈 `acm` 이 **그 수치의 분모**다. 없으면 개선폭을 못 쓴다.
+둘 다 4잡이라 8 GPU 면 `01`+`03` 을 동시에 돌려도 된다.
 
 ## 모델
 
@@ -45,7 +47,7 @@
 python tests/test_acm_sscp_literal.py
 
 # 1) 노트북
-cd notebooks && jupyter lab      # 00_smoke -> 01 -> 02 -> (03/04, 05/06) -> 07/08/09
+cd notebooks && jupyter lab      # 00 -> 01/02(ours) -> 03/04(acm) -> 05/06, 07/08 -> 09/10/11
 ```
 
 - **끊겨도 안전**: 학습은 `--resume` 자동, eval 은 끝난 run(`eval_info.json`) 자동 skip.
@@ -61,7 +63,8 @@ cf.MAIN_SEEDS   # [0,1,2,3]  학습 seed
 cf.EVAL_REPEATS # 5          반복 eval 횟수
 cf.EVAL_N_EP    # 50         rep 1회당 에피소드 (부담되면 30)
 
-cf.GROUP_OURS     # ['acm', 'ours']
+cf.GROUP_OURS     # ['ours']
+cf.GROUP_ACM      # ['acm']                                   ← 대조군
 cf.GROUP_BASELINE # ['act', 'diffusion', 'smolvla', 'acm2']
 cf.GROUP_ABLATION # ['acm_carry', 'acm_bimamba', 'acm_s7']
 ```
