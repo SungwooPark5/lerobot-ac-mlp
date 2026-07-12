@@ -22,6 +22,15 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 #    'invalid backend' 로 죽음. 커널 env 를 headless(Agg)로 덮어써서 상속 자체를 막는다(override).
 os.environ["MPLBACKEND"] = "Agg"
 
+# ── 렌더 백엔드: EGL 고정 (학습/eval 전부) ────────────────────────────────────
+# common_v23._render_prefix() 가 모든 커맨드 앞에 MUJOCO_GL=egl / PYOPENGL_PLATFORM=egl 을 붙인다.
+# (각 run 은 그 뒤에 MUJOCO_EGL_DEVICE_ID={gpu_id} 를 다시 써서 자기 GPU 로 렌더 — robosuite assert 통과용)
+# OSMesa 는 CPU 소프트웨어 렌더라 eval 이 몇 배로 느려짐 → RENDER_BACKEND=osmesa 를 export 하지 말 것.
+os.environ.setdefault("RENDER_BACKEND", "egl")
+if os.environ.get("RENDER_BACKEND") == "osmesa":
+    print("⚠️ RENDER_BACKEND=osmesa — CPU 소프트웨어 렌더. eval 이 수 배 느려짐.\n"
+          "   GPU(EGL) 로 돌리려면:  del os.environ['RENDER_BACKEND']  후 커널 재시작")
+
 _HERE = Path(__file__).resolve().parent          # <repo>/notebooks
 if str(_HERE) not in sys.path:                   # 노트북을 어디서 열든 옆 모듈을 import 할 수 있게
     sys.path.insert(0, str(_HERE))
