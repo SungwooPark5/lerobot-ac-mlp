@@ -62,12 +62,19 @@ LIBERO_EVAL_BATCH = 5
 def _libero_eval(cmd, task):
     return cmd + f" --eval.batch_size={LIBERO_EVAL_BATCH}" if str(task).startswith("libero") else cmd
 
-_orig_make_train_cmd = v23.make_train_cmd
+# ⚠️ 이 모듈은 노트북에서 importlib.reload(cf) 로 다시 실행된다. 그때 common_v23 는 reload 되지
+#    않으므로 v23.make_train_cmd 는 **이미 우리가 감싼 래퍼**다. 그걸 다시 원본으로 잡으면
+#    래퍼가 래퍼를 부르며 RecursionError. → 원본을 v23 에 딱 한 번 보관하고 거기서만 가져온다.
+_orig_make_train_cmd = getattr(v23, "_orig_make_train_cmd", v23.make_train_cmd)
+v23._orig_make_train_cmd = _orig_make_train_cmd
+
 def make_train_cmd(tag, seed=v23.PRIMARY_SEED, task=v23.PRIMARY_TASK, gpu_id=0, **kw):
     return _EGL(gpu_id) + _libero_eval(_orig_make_train_cmd(tag, seed, task, gpu_id, **kw), task)
 v23.make_train_cmd = make_train_cmd
 
-_orig_make_eval_cmd = v23.make_eval_cmd
+_orig_make_eval_cmd = getattr(v23, "_orig_make_eval_cmd", v23.make_eval_cmd)
+v23._orig_make_eval_cmd = _orig_make_eval_cmd
+
 def make_eval_cmd(tag, seed=v23.PRIMARY_SEED, task=v23.PRIMARY_TASK, gpu_id=0, **kw):
     return _EGL(gpu_id) + _libero_eval(_orig_make_eval_cmd(tag, seed, task, gpu_id, **kw), task)
 v23.make_eval_cmd = make_eval_cmd
@@ -296,10 +303,23 @@ def sr_over_reps(tag, task=None, seeds=None, reps=None):
 
 
 # ── 그룹 실행 (노트북에서 한 줄) ──────────────────────────────────────────────
-def run_training(tags, seeds=None, task=None, ngpu=8):
-    """tags x seeds 를 ngpu 청크로 학습(각 청크 끝날 때까지 대기). resume 자동."""
+def n_gpu():
+    """이 노드에서 실제로 보이는 GPU 수. 노트북의 NGPU 는 이 값을 쓴다(하드코딩 금지)."""
+    try:
+        return len(v23.available_gpus())
+    except Exception as e:                      # CUDA 없음 등 — 리포트 전용 커널
+        print("⚠️ GPU 감지 실패:", e)
+        return 1
+
+
+def run_training(tags, seeds=None, task=None, ngpu=None):
+    """tags x seeds 를 ngpu 청크로 학습(각 청크 끝날 때까지 대기). resume 자동.
+
+    ngpu=None → 이 노드의 실제 GPU 수(n_gpu())를 씀.
+    """
     seeds = seeds or MAIN_SEEDS
     task = task or MAIN_SIM
+    ngpu = ngpu or n_gpu()
     jobs = train_jobs(seeds, tags=tags, task=task)
     print(f"학습 {tags} x seed{seeds} = {len(jobs)}잡  ({STEPS:,} step, lr 고정)")
     for i in range(0, len(jobs), ngpu):
@@ -312,8 +332,12 @@ def run_training(tags, seeds=None, task=None, ngpu=8):
     return jobs
 
 
-def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=8, n_episodes=None):
-    """150k 체크포인트 x rep 반복 eval. 이미 끝난 run 은 skip → 재실행 안전."""
+def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=None, n_episodes=None):
+    """150k 체크포인트 x rep 반복 eval. 이미 끝난 run 은 skip → 재실행 안전.
+
+    ngpu=None → 이 노드의 실제 GPU 수(n_gpu())를 씀.
+    """
+    ngpu = ngpu or n_gpu()
     seeds = seeds or MAIN_SEEDS
     reps = list(range(EVAL_REPEATS)) if reps is None else list(reps)
     task = task or MAIN_SIM
