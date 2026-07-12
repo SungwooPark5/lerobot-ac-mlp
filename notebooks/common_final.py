@@ -111,6 +111,14 @@ FINAL_LABELS = {
 # 학습 대상 (act_te 는 학습 X — act ckpt 에 eval-time TE)
 TRAIN_TAGS = ["act", "diffusion", "smolvla", "acm2", "acm", "ours"]
 
+# ── 학습 태그 프리셋 (01_train_main 의 TAGS 에 골라 넣기) ──────────────────────
+#   무엇을 지금 돌릴지 = GPU 예산 문제. 논문 표에 필요한 건 결국 전부.
+TRAIN_OURS      = [OURS]                                    # 우리 모델만        (4 seed = 4잡)
+TRAIN_OURS_CTRL = ["acm", OURS]                             # + 직접 대조군 ★권장 (8잡)
+TRAIN_ABLATION  = ["acm_carry", "acm_bimamba", "acm_s7"]    # 사다리 나머지      (12잡)
+TRAIN_BASELINE  = ["act", "diffusion", "smolvla", "acm2"]   # 외부 baseline      (16잡)
+TRAIN_ALL       = TRAIN_TAGS                                # 전부              (24잡)
+
 # ── Ablation 사다리 (논문 필수: 기여 3개를 각각 분리) ──────────────────────────
 #   acm(바닥) → +carry → +BiMamba → +MOSAIC(=ours).  acm_s7 = MOSAIC 을 BiMamba 없이(직교성 확인)
 ABLATION = ["acm", "acm_carry", "acm_bimamba", "acm_s7", "ours"]
