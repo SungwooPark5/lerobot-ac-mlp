@@ -177,3 +177,13 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+# ── notebooks/ 실험 파이프라인 (ecd-final) ──
+notebooks/**/__pycache__/
+notebooks/.ipynb_checkpoints/
+notebooks/_logs/
+# 학습/eval 산출물은 레포 밖(~/lerobot_project/outputs)에 쌓이지만, 혹시 레포 안에 생겨도 차단
+**/actions/
+*.pt
+*.ckpt
+*.mp4
