@@ -111,18 +111,18 @@ FINAL_LABELS = {
 # 학습 대상 (act_te 는 학습 X — act ckpt 에 eval-time TE)
 TRAIN_TAGS = ["act", "diffusion", "smolvla", "acm2", "acm", "ours"]
 
-# ── 학습 태그 프리셋 (01_train_main 의 TAGS 에 골라 넣기) ──────────────────────
-#   무엇을 지금 돌릴지 = GPU 예산 문제. 논문 표에 필요한 건 결국 전부.
-TRAIN_OURS      = [OURS]                                    # 우리 모델만        (4 seed = 4잡)
-TRAIN_OURS_CTRL = ["acm", OURS]                             # + 직접 대조군 ★권장 (8잡)
-TRAIN_ABLATION  = ["acm_carry", "acm_bimamba", "acm_s7"]    # 사다리 나머지      (12잡)
-TRAIN_BASELINE  = ["act", "diffusion", "smolvla", "acm2"]   # 외부 baseline      (16잡)
-TRAIN_ALL       = TRAIN_TAGS                                # 전부              (24잡)
+# ── 그룹 (노트북 1개 = 그룹 1개) ──────────────────────────────────────────────
+#   OURS  = 우리 모델 + 직접 대조군(acm: 같은 백본 carry off).
+#           "plain Mamba 대비 개선"이 헤드라인 주장 → acm 없이는 그 수치를 못 씀.
+GROUP_OURS     = ["acm", OURS]                              # 01/02  (2 x 4seed = 8잡)
+GROUP_BASELINE = ["act", "diffusion", "smolvla", "acm2"]    # 03/04  (16잡) + act_te(eval only)
+GROUP_ABLATION = ["acm_carry", "acm_bimamba", "acm_s7"]     # 05/06  (12잡)
+TRAIN_ALL      = TRAIN_TAGS                                 # 전부   (24잡)
 
 # ── Ablation 사다리 (논문 필수: 기여 3개를 각각 분리) ──────────────────────────
 #   acm(바닥) → +carry → +BiMamba → +MOSAIC(=ours).  acm_s7 = MOSAIC 을 BiMamba 없이(직교성 확인)
 ABLATION = ["acm", "acm_carry", "acm_bimamba", "acm_s7", "ours"]
-ABLATION_TRAIN = ["acm_carry", "acm_bimamba", "acm_s7"]   # FINAL_TAGS 밖의 추가 학습분
+ABLATION_TRAIN = ["acm_carry", "acm_bimamba", "acm_s7"]   # FINAL_TAGS 밖의 추가 학습분 (= GROUP_ABLATION)
 DECISION_PAIR = ("acm_bimamba", "ours")       # carry+BiMamba  vs  +MOSAIC (떨림 제거가 SR 손해 없는가)
 
 FINAL_SEEDS = [0, 1, 2, 3]                   # = MAIN_SEEDS (학습 seed 4개)
@@ -273,6 +273,117 @@ def sr_over_reps(tag, task=None, seeds=None, reps=None):
         "std": _st.pstdev(allv) if len(allv) > 1 else 0.0,
         "n_runs": len(allv), "n_seed": len(per_seed),
     }
+
+
+# ── 그룹 실행 (노트북에서 한 줄) ──────────────────────────────────────────────
+def run_training(tags, seeds=None, task=None, ngpu=8):
+    """tags x seeds 를 ngpu 청크로 학습(각 청크 끝날 때까지 대기). resume 자동."""
+    seeds = seeds or MAIN_SEEDS
+    task = task or MAIN_SIM
+    jobs = train_jobs(seeds, tags=tags, task=task)
+    print(f"학습 {tags} x seed{seeds} = {len(jobs)}잡  ({STEPS:,} step, lr 고정)")
+    for i in range(0, len(jobs), ngpu):
+        chunk = jobs[i:i + ngpu]
+        print(f"\n===== 청크 {i // ngpu + 1}/{-(-len(jobs) // ngpu)} ({len(chunk)}잡) =====")
+        for j in chunk:
+            print("  ", j)
+        v23.launch_training_live(chunk)
+    print("\n학습 완료:", tags, seeds)
+    return jobs
+
+
+def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=8, n_episodes=None):
+    """150k 체크포인트 x rep 반복 eval. 이미 끝난 run 은 skip → 재실행 안전."""
+    seeds = seeds or MAIN_SEEDS
+    reps = list(range(EVAL_REPEATS)) if reps is None else list(reps)
+    task = task or MAIN_SIM
+    n = n_episodes or EVAL_N_EP
+
+    runs = [(t, s, r) for s in seeds for t in tags for r in reps]
+    todo = [x for x in runs if rep_sr(x[0], x[1], task, x[2]) is None]
+    print(f"eval {tags} | {CKPT_STEP:,} ckpt x {len(reps)}rep x {len(seeds)}seed x {n}ep")
+    print(f"  전체 {len(runs)} run / 남은 {len(todo)} (완료 {len(runs) - len(todo)})")
+
+    for i in range(0, len(todo), ngpu):
+        chunk = todo[i:i + ngpu]
+        labeled = []
+        for g, (t, s, r) in enumerate(chunk):
+            try:
+                labeled.append((f"{t}/seed{s}/rep{r}",
+                                repeat_eval_cmd(t, s, r, task=task, gpu_id=g, n_episodes=n)))
+            except FileNotFoundError as e:
+                print("  skip:", e)
+        if labeled:
+            print(f"\n===== eval 청크 {i // ngpu + 1}/{-(-len(todo) // ngpu)} ({len(labeled)} run) =====")
+            v23.launch_cmds_live(labeled)
+    print("\neval 완료:", tags)
+
+
+def print_ckpt_status(tags, seeds=None, task=None, step=None):
+    """150k 체크포인트 존재 확인 (eval 전 필수 체크)."""
+    seeds = seeds or MAIN_SEEDS
+    task = task or MAIN_SIM
+    step = CKPT_STEP if step is None else step
+    missing = []
+    print(f"{step:,} 체크포인트 ({task}):")
+    for s in seeds:
+        row = []
+        for t in tags:
+            cd = v23.best_ckpt_dir(t, s, task, how=step)
+            if cd is None:
+                row.append(f"{t}:X")
+                missing.append((t, s))
+            else:
+                got = int(cd.name)
+                row.append(f"{t}:{got // 1000}k" + ("" if got == step else "(!)"))
+        print(f"  seed{s}  " + "  ".join(row))
+    if missing:
+        print("\n⚠ 체크포인트 없음:", missing, "→ 학습 먼저")
+    return not missing
+
+
+def sr_table(tags, seeds=None, reps=None, task=None, n_episodes=None, csv_path=None):
+    """반복 eval 집계 표. mean±std(= seed x rep run) + pooled Wilson CI. rows 반환."""
+    import csv as _csv
+    seeds = seeds or MAIN_SEEDS
+    reps = list(range(EVAL_REPEATS)) if reps is None else list(reps)
+    task = task or MAIN_SIM
+    n = n_episodes or EVAL_N_EP
+
+    rows = []
+    for t in tags:
+        agg = sr_over_reps(t, task=task, seeds=seeds, reps=reps)
+        if agg["mean"] is None:
+            print(f"  {t:<12} (결과 없음)")
+            continue
+        n_ep = agg["n_runs"] * n
+        lo, hi = v23.wilson_ci(int(round(agg["mean"] / 100 * n_ep)), n_ep)
+        rows.append({"tag": t, "model": v23.MODEL_LABELS.get(t, t),
+                     "SR_mean": round(agg["mean"], 2), "SR_std": round(agg["std"], 2),
+                     "n_run": agg["n_runs"], "n_episodes": n_ep,
+                     "CI_lo": round(lo * 100, 1), "CI_hi": round(hi * 100, 1),
+                     "per_seed": {s: round(v, 1) for s, v in agg["per_seed"].items()}})
+    if not rows:
+        print("결과 없음 — eval 먼저")
+        return rows
+
+    hdr = f"{'MODEL':<34}{'SR (mean±std)':>18}{'95% CI':>16}{'runs':>6}   per-seed"
+    print(hdr)
+    print("-" * (len(hdr) + 8))
+    for r in rows:
+        sr = f"{r['SR_mean']:.1f} ± {r['SR_std']:.1f}"
+        ci = f"[{r['CI_lo']:.1f}, {r['CI_hi']:.1f}]"
+        print(f"{r['model']:<34}{sr:>18}{ci:>16}{r['n_run']:>6}   {r['per_seed']}")
+
+    if csv_path:
+        p = Path(csv_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", newline="", encoding="utf-8") as fh:
+            w = _csv.DictWriter(fh, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+        print("\n저장:", p)
+    return rows
 
 
 def action_trajs(tag, seed, task=None, reps=None):
