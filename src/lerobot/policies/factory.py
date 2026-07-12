@@ -30,6 +30,19 @@ from lerobot.datasets.utils import dataset_to_policy_features
 from lerobot.envs.configs import EnvConfig
 from lerobot.envs.utils import env_to_policy_features
 from lerobot.policies.act.configuration_act import ACTConfig
+from lerobot.policies.acm_sscp_literal.configuration_acm_sscp_literal import ACMSSCPLiteralConfig
+from lerobot.policies.acm_sscp_literal_bimamba.configuration_acm_sscp_literal_bimamba import (
+    ACMSSCPLiteralBiMambaConfig,
+)
+from lerobot.policies.acm_sscp_literal_smooth.configuration_acm_sscp_literal_smooth import (
+    ACMSSCPLiteralSmoothConfig,
+)
+from lerobot.policies.acm_sscp_literal_smooth_overlap.configuration_acm_sscp_literal_smooth_overlap import (
+    ACMSSCPLiteralSmoothOverlapConfig,
+)
+from lerobot.policies.acm_sscp_literal_smooth_state.configuration_acm_sscp_literal_smooth_state import (
+    ACMSSCPLiteralSmoothStateConfig,
+)
 from lerobot.policies.acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig
 from lerobot.policies.acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_bimamba import (
     ACM2SSCPLiteralBiMambaConfig,
@@ -103,6 +116,34 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.act.modeling_act import ACTPolicy
 
         return ACTPolicy
+    elif name == "acm_sscp_literal":
+        from lerobot.policies.acm_sscp_literal.modeling_acm_sscp_literal import ACMSSCPLiteralPolicy
+
+        return ACMSSCPLiteralPolicy
+    elif name == "acm_sscp_literal_bimamba":
+        from lerobot.policies.acm_sscp_literal_bimamba.modeling_acm_sscp_literal_bimamba import (
+            ACMSSCPLiteralBiMambaPolicy,
+        )
+
+        return ACMSSCPLiteralBiMambaPolicy
+    elif name == "acm_sscp_literal_smooth":
+        from lerobot.policies.acm_sscp_literal_smooth.modeling_acm_sscp_literal_smooth import (
+            ACMSSCPLiteralSmoothPolicy,
+        )
+
+        return ACMSSCPLiteralSmoothPolicy
+    elif name == "acm_sscp_literal_smooth_state":
+        from lerobot.policies.acm_sscp_literal_smooth_state.modeling_acm_sscp_literal_smooth_state import (
+            ACMSSCPLiteralSmoothStatePolicy,
+        )
+
+        return ACMSSCPLiteralSmoothStatePolicy
+    elif name == "acm_sscp_literal_smooth_overlap":
+        from lerobot.policies.acm_sscp_literal_smooth_overlap.modeling_acm_sscp_literal_smooth_overlap import (
+            ACMSSCPLiteralSmoothOverlapPolicy,
+        )
+
+        return ACMSSCPLiteralSmoothOverlapPolicy
     elif name == "acm2_sscp_literal":
         from lerobot.policies.acm2_sscp_literal.modeling_acm2_sscp_literal import ACM2SSCPLiteralPolicy
 
@@ -213,6 +254,16 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return DiffusionConfig(**kwargs)
     elif policy_type == "act":
         return ACTConfig(**kwargs)
+    elif policy_type == "acm_sscp_literal":
+        return ACMSSCPLiteralConfig(**kwargs)
+    elif policy_type == "acm_sscp_literal_bimamba":
+        return ACMSSCPLiteralBiMambaConfig(**kwargs)
+    elif policy_type == "acm_sscp_literal_smooth":
+        return ACMSSCPLiteralSmoothConfig(**kwargs)
+    elif policy_type == "acm_sscp_literal_smooth_state":
+        return ACMSSCPLiteralSmoothStateConfig(**kwargs)
+    elif policy_type == "acm_sscp_literal_smooth_overlap":
+        return ACMSSCPLiteralSmoothOverlapConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal":
         return ACM2SSCPLiteralConfig(**kwargs)
     elif policy_type == "acm2_sscp_literal_bimamba":
@@ -372,6 +423,16 @@ def make_pre_post_processors(
         from lerobot.policies.acm2.processor_acm2 import make_acm2_pre_post_processors
 
         processors = make_acm2_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, ACMSSCPLiteralConfig):
+        # Covers acm_sscp_literal and every subclass (bimamba / smooth / smooth_state /
+        # smooth_overlap) via isinstance. Same normalization-only processor as ACM2.
+        from lerobot.policies.acm.processor_acm import make_acm_pre_post_processors
+
+        processors = make_acm_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

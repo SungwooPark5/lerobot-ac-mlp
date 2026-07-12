@@ -13,6 +13,20 @@
 # limitations under the License.
 
 from .act.configuration_act import ACTConfig as ACTConfig
+from .acm.configuration_acm import ACMConfig as ACMConfig
+from .acm_sscp_literal.configuration_acm_sscp_literal import ACMSSCPLiteralConfig as ACMSSCPLiteralConfig
+from .acm_sscp_literal_bimamba.configuration_acm_sscp_literal_bimamba import (
+    ACMSSCPLiteralBiMambaConfig as ACMSSCPLiteralBiMambaConfig,
+)
+from .acm_sscp_literal_smooth.configuration_acm_sscp_literal_smooth import (
+    ACMSSCPLiteralSmoothConfig as ACMSSCPLiteralSmoothConfig,
+)
+from .acm_sscp_literal_smooth_overlap.configuration_acm_sscp_literal_smooth_overlap import (
+    ACMSSCPLiteralSmoothOverlapConfig as ACMSSCPLiteralSmoothOverlapConfig,
+)
+from .acm_sscp_literal_smooth_state.configuration_acm_sscp_literal_smooth_state import (
+    ACMSSCPLiteralSmoothStateConfig as ACMSSCPLiteralSmoothStateConfig,
+)
 from .acm2.configuration_acm2 import ACM2Config as ACM2Config
 from .acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig as ACM2SSCPLiteralConfig
 from .acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_bimamba import (
@@ -48,6 +62,12 @@ from .xvla.configuration_xvla import XVLAConfig as XVLAConfig
 
 __all__ = [
     "ACTConfig",
+    "ACMConfig",
+    "ACMSSCPLiteralConfig",
+    "ACMSSCPLiteralBiMambaConfig",
+    "ACMSSCPLiteralSmoothConfig",
+    "ACMSSCPLiteralSmoothStateConfig",
+    "ACMSSCPLiteralSmoothOverlapConfig",
     "ACM2Config",
     "ACM2SSCPLiteralConfig",
     "ACM2SSCPLiteralBiMambaConfig",
