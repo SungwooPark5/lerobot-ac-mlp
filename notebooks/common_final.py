@@ -72,16 +72,26 @@ v23.make_eval_cmd = make_eval_cmd
 v23.STEPS = 150_000             # make_train_cmd 가 --steps 로 읽음 (150k 까지만)
 STEPS = v23.STEPS
 CKPT_STEP = 150_000             # eval 대상 체크포인트 (고정)
+v23.SAVE_FREQ = 10_000          # 10k 마다 체크포인트 → 150k 반드시 존재
 
-# 학습중 eval: 50k~150k (10k마다). SR-vs-step 곡선용. 끄려면 v23.EVAL_FREQ = 0.
-v23.EVAL_START = 50_000
-v23.TRAIN_EVAL_N = 50           # 학습중 eval 에피소드(가볍게). 논문 수치는 아래 반복 eval 로.
+# ── 학습중 eval: OFF ──────────────────────────────────────────────────────────
+# eval_freq=0 → 학습 프로세스가 sim env 를 아예 안 만든다.
+#   · GPU/시간 절약 (150k 동안 eval 로 새는 시간 0)
+#   · env 를 미리 다 만들며 VRAM 을 먹던 CUDA OOM 원인 자체가 사라짐
+#   · 어차피 논문 수치는 150k 체크포인트 반복 eval 로만 낸다 (best-ckpt 안 고름)
+# ⚠️ 대가: SR-vs-step 곡선이 안 나온다(09_report_sr 의 곡선 셀은 비어 있게 됨).
+#    수렴 곡선이 필요하면 v23.EVAL_FREQ = 10_000 으로 되돌릴 것.
+v23.EVAL_FREQ = 0               # ← 이 값 하나로 꺼짐 (lerobot_train: eval_freq>0 일 때만 env 생성/eval)
+v23.EVAL_START = STEPS          # eval_freq=0 이라 무의미하지만 안전하게 끝값으로
+# ⚠️ TRAIN_EVAL_N 은 0 으로 두면 안 됨: EvalConfig 가 batch_size(50) > n_episodes 를 에러로 막아
+#    --eval.n_episodes=0 을 주는 순간 학습이 config 파싱에서 죽는다. eval_freq=0 이라 쓰이지 않는 값.
+v23.TRAIN_EVAL_N = 50
 EVAL_START = v23.EVAL_START
 
-# 반복 eval (150k ckpt 재평가)
+# ── 반복 eval (150k ckpt 재평가) ──────────────────────────────────────────────
 EVAL_REPEATS = 5                # 반복 횟수
 EVAL_SEED0 = 1000               # rep r → --seed = EVAL_SEED0 + 100*r  (env 초기상태가 rep 마다 달라짐)
-EVAL_N_EP = 50                  # 반복 1회당 에피소드 수 (총 = 5 × 50 = 250/seed)
+EVAL_N_EP = 500                 # 반복 1회당 에피소드 (= 모델/seed 당 5 × 500 = 2,500 에피소드)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 논문 모델 세트 (2026-07-12 기준)

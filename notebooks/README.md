@@ -6,11 +6,12 @@
 
 | | |
 |---|---|
-| **학습** | **150k step** · **seed 4개**(0-3) · **lr sweep 없음** (전 모델 고정 **1e-5**) |
-| **eval** | **150k 체크포인트 1개**를 **5회 반복** — rep 마다 `--seed = 1000 + 100·rep` → env 초기상태가 달라짐 |
-| **수치** | 모델당 4 seed × 5 rep = **20 run** → **mean ± std** + pooled Wilson 95% CI |
+| **학습** | **150k step** · **seed 4개**(0-3) · **lr sweep 없음**(고정 1e-5) · **학습중 eval OFF** |
+| **eval** | **150k 체크포인트 1개**를 **5회 반복 × 500 에피소드** — rep 마다 `--seed = 1000 + 100·rep` → env 초기상태가 달라짐 |
+| **수치** | 모델당 4 seed × 5 rep = **20 run × 500ep = 10,000 에피소드** → **mean ± std** + pooled Wilson 95% CI |
 | **왜 best-ckpt 를 안 고르나** | 모델마다 유리한 step 을 뽑으면 cherry-pick → 전 모델 동일 step(150k) 고정 |
 | **왜 rep 마다 seed 를 바꾸나** | 같은 seed 로 5번 돌리면 결정적이라 반복이 무의미. 학습 seed(모델 분산)와 rep(평가 분산)을 분리 |
+| **왜 학습중 eval 을 끄나** | 어차피 150k 한 점만 쓰므로 불필요. 학습 프로세스가 sim env 를 아예 안 만들어 **시간·VRAM 절약**(옛 CUDA OOM 원인 제거) |
 
 예외: `diffusion` / `smolvla` 만 **각자 원 논문 lr(1e-4)** — 남의 방법을 우리 lr 로 깎으면 baseline 이 불공정.
 
@@ -61,7 +62,8 @@ cf.STEPS        # 150_000    학습 스텝
 cf.CKPT_STEP    # 150_000    평가할 체크포인트
 cf.MAIN_SEEDS   # [0,1,2,3]  학습 seed
 cf.EVAL_REPEATS # 5          반복 eval 횟수
-cf.EVAL_N_EP    # 50         rep 1회당 에피소드 (부담되면 30)
+cf.EVAL_N_EP    # 500        rep 1회당 에피소드
+cf.v23.EVAL_FREQ # 0         학습중 eval OFF (수렴 곡선 원하면 10_000)
 
 cf.GROUP_OURS     # ['ours']
 cf.GROUP_ACM      # ['acm']                                   ← 대조군
