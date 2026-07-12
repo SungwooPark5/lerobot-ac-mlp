@@ -66,6 +66,22 @@ TRAIN_EVAL_N = 500        # 각 학습중 eval 500 에피소드
 SAVE_FREQ = 10_000
 EVAL_N_EPISODES = 500
 EVAL_BATCH_SIZE = 50
+# LIBERO 는 task 10개 → 동시 env = eval.batch_size × 10. 크게 두면 렌더 컨텍스트가 VRAM 을 먹어 OOM.
+LIBERO_EVAL_BATCH = 5
+
+
+def _gpu_env(gpu_id):
+    """모든 학습/eval 커맨드 앞에 붙는 per-run 환경변수.
+
+    · MUJOCO_EGL_DEVICE_ID={gpu} : robosuite 는 렌더 디바이스가 CUDA_VISIBLE_DEVICES 안에
+      있어야 assert 통과. _render_prefix 의 고정값 0 을 여기서 덮어씀(뒤에 오는 게 이김).
+    · MPLBACKEND=Agg : subprocess 가 Jupyter 커널의 inline 백엔드를 상속하면 libero 가 죽음.
+    """
+    return [f"MPLBACKEND=Agg", f"MUJOCO_EGL_DEVICE_ID={gpu_id}", f"CUDA_VISIBLE_DEVICES={gpu_id}"]
+
+
+def _eval_batch(task, n_episodes):
+    return LIBERO_EVAL_BATCH if str(task).startswith("libero") else min(n_episodes, EVAL_BATCH_SIZE)
 
 LR_CARRY = 1e-5   # (2026-07-12) 전 모델 lr 통일 → 옛 스윕도 1e-5
 
@@ -381,7 +397,7 @@ def make_train_cmd(tag, seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
         lr = lr_override
     dataset, env_type, env_task = TASKS[task]
     out = Path(out_dir) if out_dir is not None else train_dir(tag, seed, task)
-    parts = [f"CUDA_VISIBLE_DEVICES={gpu_id}", f"{PYTHON} -m lerobot.scripts.lerobot_train"]
+    parts = _gpu_env(gpu_id) + [f"{PYTHON} -m lerobot.scripts.lerobot_train"]
     # smolvla 처럼 사전학습 가중치에서 출발하는 정책은 --policy.type 대신 --policy.path.
     init = PRETRAINED_INIT.get(tag)
     parts.append(f"--policy.path={init}" if init else f"--policy.type={policy_type}")
@@ -406,6 +422,8 @@ def make_train_cmd(tag, seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
         parts += ["--resume=true", f"--config_path={tc}"]
     if use_cp:
         parts.append("--use_chunk_pairs=true")
+    if str(task).startswith("libero"):        # LIBERO 는 동시 env = batch × 10 → 작게
+        parts.append(f"--eval.batch_size={LIBERO_EVAL_BATCH}")
     parts.extend(extra)
     return " ".join(parts)
 
@@ -423,11 +441,11 @@ def make_eval_cmd(tag, seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
     out.mkdir(parents=True, exist_ok=True)
     # 표준 lerobot_eval 직접 호출(외란 X, 외부 스크립트 의존 X).
     # action(.pt) 은 fork 의 eval 루프가 RECORD_DIR 환경변수로 기록 → jerk 측정용.
-    parts = [
-        f"CUDA_VISIBLE_DEVICES={gpu_id}", f"RECORD_DIR={out / 'actions'}",
+    parts = _gpu_env(gpu_id) + [
+        f"RECORD_DIR={out / 'actions'}",
         f"{PYTHON} -m lerobot.scripts.lerobot_eval", f"--policy.path={ckpt}",
         f"--env.type={env_type}", f"--env.task={env_task}",
-        f"--eval.n_episodes={n}", f"--eval.batch_size={min(n, EVAL_BATCH_SIZE)}", f"--output_dir={out}",
+        f"--eval.n_episodes={n}", f"--eval.batch_size={_eval_batch(task, n)}", f"--output_dir={out}",
     ]
     if extra_policy:
         parts.extend(extra_policy)          # e.g. eval-time --policy.sscp_overlap=... override

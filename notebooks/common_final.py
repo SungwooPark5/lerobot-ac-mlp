@@ -35,8 +35,15 @@ _HERE = Path(__file__).resolve().parent          # <repo>/notebooks
 if str(_HERE) not in sys.path:                   # 노트북을 어디서 열든 옆 모듈을 import 할 수 있게
     sys.path.insert(0, str(_HERE))
 
-from common_v23 import *        # noqa: F401,F403  make_train_cmd/launch_*/eval_curve/report helpers/TASKS/...
+import importlib as _il
+
 import common_v23 as v23        # noqa: F401
+# 노트북은 `importlib.reload(cf)` 를 부른다. 그때 common_v23 도 같이 새로 실행해야
+# (a) 옛 세션에서 v23 전역에 남은 몽키패치/설정 잔재가 지워지고
+# (b) 아래에서 다시 세팅하는 STEPS/EVAL_FREQ/... 가 항상 같은 출발점에서 적용된다.
+# 이걸 안 하면 커널을 재시작하기 전까지 v23 의 옛 상태가 계속 살아남는다.
+v23 = _il.reload(v23)
+from common_v23 import *        # noqa: F401,F403,E402  make_train_cmd/launch_*/eval_curve/TASKS/...
 
 # ── 출력은 outputs/final 로 (v23 와 분리) ──────────────────────────────────────
 # v23 의 경로 헬퍼(train_dir/eval_clean_dir/status/curve/report/_logs)는 모두 common_v23 모듈의
@@ -45,39 +52,15 @@ import common_v23 as v23        # noqa: F401
 OUTPUT_BASE = v23.OUTPUT_BASE.parent / "final"
 v23.OUTPUT_BASE = OUTPUT_BASE
 
-# ── robosuite(LIBERO) EGL 디바이스 ────────────────────────────────────────────
-# robosuite 는 MUJOCO_EGL_DEVICE_ID 가 CUDA_VISIBLE_DEVICES 안의 값이어야 assert 통과.
-# v23 _render_prefix 는 MUJOCO_EGL_DEVICE_ID=0 고정 → gpu_id!=0 잡에서 AssertionError.
-# make_train_cmd/make_eval_cmd 맨 앞에 MUJOCO_EGL_DEVICE_ID={gpu_id} 주입(render_prefix 뒤에 와서 0을 덮어씀).
-# + MPLBACKEND=Agg : 학습 subprocess 가 Jupyter 커널의 inline matplotlib 백엔드를 상속하면
-#   libero(matplotlib.cm import) 가 'invalid backend' 로 죽음 → Agg(headless)로 덮어씀.
-# (common_final 을 import 한 프로세스에만 적용 → 은지님 v23/dro 런은 영향 없음.)
-_EGL = lambda g: f"MPLBACKEND=Agg MUJOCO_EGL_DEVICE_ID={g} "
-
-# LIBERO eval: task 가 10개라 동시 env 수 = eval.batch_size × 10. eval env 는 학습 시작 전에 전부 미리 생성돼
-# 학습 내내 GPU VRAM(MuJoCo 렌더 컨텍스트)을 점유함 → 정책 로드 시 VRAM 초과 = CUDA OOM(진짜 원인).
-# (EGL_NOT_INITIALIZED 홍수는 OOM 으로 죽은 뒤 env teardown 노이즈일 뿐.) → batch = VRAM knob. 4 = 동시 40 env.
-# seed1~3(EVAL_FREQ=0)은 eval env 미생성이라 OOM 안 남. 50 env 도 OOM 이면 3 → 2 로. GPU 공유(overcommit)도 확인.
+# ── EGL 디바이스 / LIBERO eval batch ─────────────────────────────────────────
+# 예전엔 여기서 v23.make_train_cmd / make_eval_cmd 를 감싸 몽키패치했는데, 노트북이
+# importlib.reload(cf) 를 부르면 래퍼를 다시 원본으로 잡아 **RecursionError** 가 났다.
+# → 이제 그 주입은 common_v23.make_*_cmd 안(_gpu_env / _eval_batch)에서 직접 한다. 래핑 없음.
+#   · MUJOCO_EGL_DEVICE_ID={gpu} : robosuite 는 렌더 디바이스가 CUDA_VISIBLE_DEVICES 안이어야 함
+#   · MPLBACKEND=Agg             : subprocess 가 커널의 inline 백엔드를 상속하면 libero 가 죽음
+#   · LIBERO 는 동시 env = batch × 10(task) → VRAM OOM 방지로 batch 를 작게
 LIBERO_EVAL_BATCH = 5
-def _libero_eval(cmd, task):
-    return cmd + f" --eval.batch_size={LIBERO_EVAL_BATCH}" if str(task).startswith("libero") else cmd
-
-# ⚠️ 이 모듈은 노트북에서 importlib.reload(cf) 로 다시 실행된다. 그때 common_v23 는 reload 되지
-#    않으므로 v23.make_train_cmd 는 **이미 우리가 감싼 래퍼**다. 그걸 다시 원본으로 잡으면
-#    래퍼가 래퍼를 부르며 RecursionError. → 원본을 v23 에 딱 한 번 보관하고 거기서만 가져온다.
-_orig_make_train_cmd = getattr(v23, "_orig_make_train_cmd", v23.make_train_cmd)
-v23._orig_make_train_cmd = _orig_make_train_cmd
-
-def make_train_cmd(tag, seed=v23.PRIMARY_SEED, task=v23.PRIMARY_TASK, gpu_id=0, **kw):
-    return _EGL(gpu_id) + _libero_eval(_orig_make_train_cmd(tag, seed, task, gpu_id, **kw), task)
-v23.make_train_cmd = make_train_cmd
-
-_orig_make_eval_cmd = getattr(v23, "_orig_make_eval_cmd", v23.make_eval_cmd)
-v23._orig_make_eval_cmd = _orig_make_eval_cmd
-
-def make_eval_cmd(tag, seed=v23.PRIMARY_SEED, task=v23.PRIMARY_TASK, gpu_id=0, **kw):
-    return _EGL(gpu_id) + _libero_eval(_orig_make_eval_cmd(tag, seed, task, gpu_id, **kw), task)
-v23.make_eval_cmd = make_eval_cmd
+v23.LIBERO_EVAL_BATCH = LIBERO_EVAL_BATCH
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 학습 / eval 프로토콜 (2026-07-12 확정)
