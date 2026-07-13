@@ -77,7 +77,8 @@ def _gpu_env(gpu_id):
       있어야 assert 통과. _render_prefix 의 고정값 0 을 여기서 덮어씀(뒤에 오는 게 이김).
     · MPLBACKEND=Agg : subprocess 가 Jupyter 커널의 inline 백엔드를 상속하면 libero 가 죽음.
     """
-    return [f"MPLBACKEND=Agg", f"MUJOCO_EGL_DEVICE_ID={gpu_id}", f"CUDA_VISIBLE_DEVICES={gpu_id}"]
+    return ["MPLBACKEND=Agg", "HF_HUB_DISABLE_XET=1",
+            f"MUJOCO_EGL_DEVICE_ID={gpu_id}", f"CUDA_VISIBLE_DEVICES={gpu_id}"]
 
 
 def _eval_batch(task, n_episodes):

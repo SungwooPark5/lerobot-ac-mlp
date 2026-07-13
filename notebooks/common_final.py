@@ -9,6 +9,7 @@
 
 경로 오버라이드(환경변수): LEROBOT_REPO / LEROBOT_PYTHON / LEROBOT_OUTPUT — common_v23 참고.
 """
+import json
 import os
 import sys
 from pathlib import Path
@@ -295,14 +296,51 @@ def n_gpu():
         return 1
 
 
-def run_training(tags, seeds=None, task=None, ngpu=None):
+def prefetch_dataset(task=None, force=False):
+    """데이터셋을 **한 프로세스로 먼저** 내려받아 HF 캐시를 데운다.
+
+    ⚠️ 이걸 안 하면: 학습 잡 N개가 각자 snapshot_download 를 같은 캐시 폴더에 동시에 호출한다.
+       먼저 시작한 잡이 meta/info.json·meta/episodes/*.parquet 를 아직 다 못 풀었는데 다른 잡이
+       그 폴더를 읽어버려서
+         FileNotFoundError: ... meta/info.json
+         FileNotFoundError: Provided directory does not contain any parquet file: .../meta/episodes
+       로 죽는다. 다운로드를 완주한 한 잡만 살아남음(= seed 하나만 성공하는 증상).
+    캐시가 이미 차 있으면 즉시 리턴(초 단위).
+    """
+    import subprocess
+    task = task or MAIN_SIM
+    repo_id = v23.TASKS[task][0]
+    py = f"""
+from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata, LeRobotDataset
+m = LeRobotDatasetMetadata({repo_id!r})
+ds = LeRobotDataset({repo_id!r})
+print('PREFETCH_OK', {repo_id!r}, 'episodes', ds.num_episodes, 'frames', ds.num_frames)
+"""
+    cmd = (f"HF_HUB_DISABLE_XET=1 PYTHONPATH={v23.SRC_DIR} "
+           f"{v23.PYTHON} -c {json.dumps(py)}")
+    print(f"[prefetch] {repo_id} — 캐시 데우는 중 (첫 실행은 몇 분)…")
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    ok = "PREFETCH_OK" in r.stdout
+    if ok:
+        print("[prefetch]", [l for l in r.stdout.splitlines() if "PREFETCH_OK" in l][0])
+    else:
+        print("[prefetch] ⚠️ 실패 — 아래 로그 확인 후 학습을 멈출 것")
+        print((r.stdout or "")[-800:])
+        print((r.stderr or "")[-1500:])
+    return ok
+
+
+def run_training(tags, seeds=None, task=None, ngpu=None, prefetch=True):
     """tags x seeds 를 ngpu 청크로 학습(각 청크 끝날 때까지 대기). resume 자동.
 
     ngpu=None → 이 노드의 실제 GPU 수(n_gpu())를 씀.
+    prefetch=True → 병렬 실행 전에 데이터셋을 한 번 받아둔다(동시 다운로드 레이스 방지).
     """
     seeds = seeds or MAIN_SEEDS
     task = task or MAIN_SIM
     ngpu = ngpu or n_gpu()
+    if prefetch and not prefetch_dataset(task):
+        raise RuntimeError("데이터셋 prefetch 실패 → 병렬 학습을 띄우면 전부 죽는다. 위 로그 확인.")
     jobs = train_jobs(seeds, tags=tags, task=task)
     print(f"학습 {tags} x seed{seeds} = {len(jobs)}잡  ({STEPS:,} step, lr 고정)")
     for i in range(0, len(jobs), ngpu):
