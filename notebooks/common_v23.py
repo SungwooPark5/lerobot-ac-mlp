@@ -323,10 +323,33 @@ def run_label(tag, seed, task):
     return f"{tag}/{task}/seed{seed}"
 
 
+LAST_CHECKPOINT_LINK = "last"     # lerobot: <out>/checkpoints/last -> <step>
+
+
 def _ckpts(root: Path):
     if not root.is_dir():
         return []
     return sorted([d for d in root.iterdir() if d.is_dir() and d.name.isdigit()], key=lambda d: int(d.name))
+
+
+def last_ckpt_step(out: Path):
+    """이 출력 디렉토리가 도달한 마지막 체크포인트 step. 없으면 None."""
+    cks = _ckpts(Path(out) / "checkpoints")
+    return int(cks[-1].name) if cks else None
+
+
+def last_train_config(out: Path):
+    """resume 에 넘길 train_config.json 경로 (= 마지막 체크포인트 안). 없으면 None.
+
+    lerobot 은 이 파일을 <out>/checkpoints/<step>/pretrained_model/ 에만 저장한다.
+    checkpoints/last 는 그 step 을 가리키는 심볼릭 링크.
+    """
+    out = Path(out)
+    for cand in (out / "checkpoints" / LAST_CHECKPOINT_LINK, *reversed(_ckpts(out / "checkpoints"))):
+        tc = cand / "pretrained_model" / "train_config.json"
+        if tc.exists():
+            return tc
+    return None
 
 
 def _pretrained(ckpt: Path) -> Path:
@@ -416,10 +439,20 @@ def make_train_cmd(tag, seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
         f"--eval.n_episodes={TRAIN_EVAL_N}",
         f"--save_freq={SAVE_FREQ}", f"--seed={seed}", f"--output_dir={out}", "--policy.push_to_hub=false",
     ]
-    tc = out / "train_config.json"
+    # ── resume ────────────────────────────────────────────────────────────────
+    # lerobot 은 train_config.json 을 **체크포인트 안**에만 쓴다:
+    #   <out>/checkpoints/<step>/pretrained_model/train_config.json   (+ checkpoints/last 심볼릭 링크)
+    # 예전엔 <out>/train_config.json 을 찾았는데 그런 파일은 존재하지 않는다 →
+    #   · resume 이 **한 번도 안 걸려** 재실행할 때마다 step 0 부터 다시 학습했고
+    #   · "config 없음 = 빈 디렉토리" 로 오판해 체크포인트째로 지울 뻔했다.
+    tc = last_train_config(out)
     if resume is None:
-        resume = tc.exists()
+        resume = tc is not None
     if resume:
+        if tc is None:
+            raise FileNotFoundError(
+                f"resume 하려는데 체크포인트가 없다: {out}/checkpoints/  → 처음부터 학습해야 함"
+            )
         parts += ["--resume=true", f"--config_path={tc}"]
     if use_cp:
         parts.append("--use_chunk_pairs=true")
@@ -523,14 +556,27 @@ def launch_cmds_live(labeled_cmds, log_tag="job"):
     (ip.system if ip is not None else lambda c: subprocess.run(c, shell=True, executable="/bin/bash"))(pc)
 
 
+def clean_if_no_ckpt(out: Path):
+    """체크포인트가 **하나도 없는** 출력 디렉토리만 정리한다(크래시 잔재).
+
+    ⚠️ 체크포인트가 있으면 절대 지우지 않는다 — 예전 코드는 <out>/train_config.json 이
+    없으면(그 파일은 애초에 거기 안 생긴다) 디렉토리를 통째로 rmtree 해서, 120k 까지 간
+    학습도 날려버릴 수 있었다.
+    """
+    out = Path(out)
+    if out.exists() and last_ckpt_step(out) is None:
+        import shutil
+        shutil.rmtree(out)
+        return True
+    return False
+
+
 def launch_training_live(jobs, gpu_offset=0, skip_done=True):
     labeled = []
     for i, (tag, seed, task) in enumerate(jobs):
         if skip_done and get_training_status(tag, seed, task)["done"]:
             print(f"  [skip] {run_label(tag, seed, task)} done"); continue
-        out = train_dir(tag, seed, task)
-        if out.exists() and not (out / "train_config.json").exists():
-            import shutil; shutil.rmtree(out)
+        clean_if_no_ckpt(train_dir(tag, seed, task))
         labeled.append((run_label(tag, seed, task), make_train_cmd(tag, seed, task, gpu_offset + i)))
     launch_cmds_live(labeled, log_tag="train")
 

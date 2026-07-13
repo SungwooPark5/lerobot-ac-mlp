@@ -389,18 +389,51 @@ def run_training(tags, seeds=None, task=None, ngpu=None, gpus=None, prefetch=Tru
         labeled = []
         for g, (tag, seed, tk) in zip(gpus, chunk):
             out = v23.train_dir(tag, seed, tk)
-            if v23.get_training_status(tag, seed, tk)["done"]:
-                print(f"  [skip] {v23.run_label(tag, seed, tk)} done")
+            done_step = v23.last_ckpt_step(out)
+            if done_step is not None and done_step >= CKPT_STEP:
+                print(f"  [skip] {v23.run_label(tag, seed, tk)} — 이미 {done_step:,} 완료")
                 continue
-            if out.exists() and not (out / "train_config.json").exists():
-                import shutil
-                shutil.rmtree(out)                      # 크래시로 남은 빈 디렉토리 정리
-            print(f"   GPU{g}  {v23.run_label(tag, seed, tk)}")
+            v23.clean_if_no_ckpt(out)               # 체크포인트 없는 크래시 잔재만 정리
+            mode = f"resume @{done_step:,}" if done_step else "새로 시작"
+            print(f"   GPU{g}  {v23.run_label(tag, seed, tk):<28} {mode}")
             labeled.append((v23.run_label(tag, seed, tk), make_train_cmd(tag, seed, tk, g)))
         if labeled:
             v23.launch_cmds_live(labeled, log_tag="train")
     print("\n학습 완료:", tags, seeds)
     return jobs
+
+
+def resume_status(tags, seeds=None, task=None):
+    """seed 별 진행 상황: 마지막 체크포인트 step / 남은 step / resume 가능 여부."""
+    seeds = seeds or MAIN_SEEDS
+    task = task or MAIN_SIM
+    print(f"{task} — 목표 {STEPS:,} step")
+    print(f"{'RUN':<26}{'마지막 ckpt':>14}{'남음':>12}   상태")
+    print("-" * 68)
+    todo = []
+    for t in tags:
+        for s in seeds:
+            out = v23.train_dir(t, s, task)
+            step = v23.last_ckpt_step(out)
+            tc = v23.last_train_config(out)
+            if step is None:
+                state = "체크포인트 없음 → 처음부터"
+                left = STEPS
+            elif step >= STEPS:
+                state = "✅ 완료"
+                left = 0
+            elif tc is None:
+                state = "⚠️ ckpt 는 있는데 train_config 없음 → 처음부터"
+                left = STEPS
+            else:
+                state = "▶ resume 가능"
+                left = STEPS - step
+            if left:
+                todo.append((t, s))
+            print(f"{v23.run_label(t, s, task):<26}{(f'{step:,}' if step else '-'):>14}"
+                  f"{left:>12,}   {state}")
+    print(f"\n이어서 돌릴 것: {todo or '없음 (전부 완료)'}")
+    return todo
 
 
 def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=None, gpus=None, n_episodes=None):
