@@ -22,7 +22,8 @@
 | | 학습 | eval | 모델 | 잡 / run |
 |---|---|---|---|---|
 | preflight | `00_smoke` | — | — | CUDA·mamba_ssm·**carry parity 테스트** |
-| **이어학습** | **`0r_resume_train`** | — | 끊긴 학습을 **마지막 체크포인트부터** (끝난 seed 는 skip) | — |
+| **이어학습** | **`0r_resume_train`** | — | `transfer` — 끊긴 학습을 **마지막 체크포인트부터** (끝난 seed skip) | — |
+| **2-GPU eval** | — | **`0e_eval_transfer_2gpu`** | `transfer` — **2 seed × 5 rep = 10 run** (`PART` 로 나머지 seed) | 10 run |
 | **★우리 모델** | `01_train_ours` | `02_eval_ours` | **`ours`** | 4잡 / 20 run |
 | **★대조군** | `03_train_acm` | `04_eval_acm` | `acm` (carry off) | 4잡 / 20 run |
 | baseline | `05_train_baseline` | `06_eval_baseline` | `act`·`diffusion`·`smolvla`·`acm2` (+`act_te` eval만) | 16잡 / 100 run |
