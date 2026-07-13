@@ -15,23 +15,6 @@
 
 예외: `diffusion` / `smolvla` 만 **각자 원 논문 lr(1e-4)** — 남의 방법을 우리 lr 로 깎으면 baseline 이 불공정.
 
-## ★ GPU 2장씩 나눠 돌리기 — `A_run_seed01` / `B_run_seed23`
-
-GPU 를 2장씩 쓸 땐 **이 두 노트북만** 쓰면 된다. 창 두 개를 동시에 띄우고 각각 실행:
-
-| 창 | seed | GPU | 노트북 |
-|---|---|---|---|
-| **A** | 0, 1 | 0, 1 | `A_run_seed01.ipynb` |
-| **B** | 2, 3 | 2, 3 | `B_run_seed23.ipynb` |
-
-- 두 창이 **다른 GPU** 를 쓰므로 서로 밟지 않는다 (`cf.part('A'/'B')` 가 seed·GPU 를 함께 배정).
-- 결과가 같은 경로에 쌓여 리포트에서 **seed 4개로 자동 pooled**.
-- 각 셀 = 그룹 하나(insertion/transfer × ours/acm/baseline/ablation). 필요한 것만 순서대로.
-- 끊겨도 재실행하면 이어감 (학습 = resume, eval = 끝난 run skip).
-- **GPU 가 2장뿐인 노드**면: A 먼저 끝내고 → B 노트북에서 `GPUS = [0, 1]` 로 바꿔 순차 실행.
-
-아래 개별 노트북은 **그룹 하나만** 따로 볼 때 쓴다(러너와 같은 함수를 부르므로 결과는 동일).
-
 ## 노트북 (task × 모델 그룹마다 학습/eval 이 따로)
 
 **메인 = `insertion`** (긴 horizon)
@@ -44,13 +27,18 @@ GPU 를 2장씩 쓸 땐 **이 두 노트북만** 쓰면 된다. 창 두 개를 �
 | baseline | `05_train_baseline` | `06_eval_baseline` | `act`·`diffusion`·`smolvla`·`acm2` (+`act_te` eval만) | 16잡 / 100 run |
 | ablation | `07_train_ablation` | `08_eval_ablation` | `acm_carry`·`acm_bimamba`·`acm_s7` (+표) | 12잡 / 60 run |
 
-**짧은 앵커 = `transfer`** (동일 프로토콜, 출력 경로가 갈려 섞이지 않음)
+**짧은 앵커 = `transfer`** — **GPU 2장씩 두 창으로 나눠 돌린다** (`a` = seed 0,1 / GPU 0,1 · `b` = seed 2,3 / GPU 2,3)
 
-| | 학습 | eval | 모델 | 잡 / run |
+| | 학습 | eval | 모델 | 창당 잡 / run |
 |---|---|---|---|---|
-| 우리 모델 | `12_train_ours_transfer` | `13_eval_ours_transfer` | `ours` | 4잡 / 20 run |
-| 대조군 | `14_train_acm_transfer` | `15_eval_acm_transfer` | `acm` | 4잡 / 20 run |
-| baseline | `16_train_baseline_transfer` | `17_eval_baseline_transfer` | act·diffusion·smolvla·acm2 (+act_te) | 16잡 / 100 run |
+| 우리 모델 | `12a` · `12b` | `13a` · `13b` | `ours` | 2잡 / 10 run |
+| 대조군 | `14a` · `14b` | `15a` · `15b` | `acm` | 2잡 / 10 run |
+| baseline | `16a` · `16b` | `17a` · `17b` | act·diffusion·smolvla·acm2 (+act_te) | 8잡 / 50 run |
+
+- `a` 창과 `b` 창은 **다른 GPU** 를 쓰므로 동시에 띄워도 안 밟는다(`cf.part('A'/'B')` 가 seed·GPU 동시 배정).
+- 둘 다 끝나면 seed 4개가 모여 리포트에서 **자동 pooled**.
+- insertion(`01`~`08`)은 GPU 4장을 그대로 쓴다 — 그게 도는 동안엔 transfer 를 띄우지 말 것.
+- GPU 2장뿐인 노드면: `a` 를 끝낸 뒤 `b` 에서 `GPUS = [0, 1]` 로 바꿔 순차 실행.
 
 **리포트**
 
