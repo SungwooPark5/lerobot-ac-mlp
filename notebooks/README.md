@@ -15,28 +15,42 @@
 
 예외: `diffusion` / `smolvla` 만 **각자 원 논문 lr(1e-4)** — 남의 방법을 우리 lr 로 깎으면 baseline 이 불공정.
 
-## 노트북 (모델 그룹마다 학습/eval 이 따로)
+## 노트북 (task × 모델 그룹마다 학습/eval 이 따로)
+
+**메인 = `insertion`** (긴 horizon)
 
 | | 학습 | eval | 모델 | 잡 / run |
 |---|---|---|---|---|
-| preflight | `00_smoke` | — | — | CUDA·mamba_ssm·**carry parity 테스트**·dry-run |
+| preflight | `00_smoke` | — | — | CUDA·mamba_ssm·**carry parity 테스트** |
 | **★우리 모델** | `01_train_ours` | `02_eval_ours` | **`ours`** | 4잡 / 20 run |
 | **★대조군** | `03_train_acm` | `04_eval_acm` | `acm` (carry off) | 4잡 / 20 run |
 | baseline | `05_train_baseline` | `06_eval_baseline` | `act`·`diffusion`·`smolvla`·`acm2` (+`act_te` eval만) | 16잡 / 100 run |
 | ablation | `07_train_ablation` | `08_eval_ablation` | `acm_carry`·`acm_bimamba`·`acm_s7` (+표) | 12잡 / 60 run |
-| 리포트 | — | `09_report_sr` | 전 모델 SR 표·그림 (Table 1) | — |
-| | — | `10_report_jerk` | 떨림 — 경계/내부 jerk, SPARC, **경계정렬 jerk 프로파일**(헤드라인 그림) | — |
-| | — | `11_efficiency` | latency·VRAM vs K (어텐션 O(L²) vs Mamba O(L)). **학습 불필요** | — |
-| **짧은 task** | `12_train_transfer` | `13_eval_transfer` | transfer 에서 같은 모델들 (+ SR vs horizon 그림) | 태그 선택 |
-| 보조 | `20_train_libero_seed{0-3}` | `21_eval_libero` · `21b_*` | LIBERO-10 | — |
 
-**task 축**: `insertion`(메인, 긴 horizon) · `transfer`(짧은 앵커, `12`/`13`) · `libero_10`(보조).
-Intro 가 *"짧은 task 는 ACT 와 대등, 길수록 우리가 앞선다"* 고 주장하므로 **짧은 쪽(transfer) 데이터포인트가 필요**하다.
-출력이 task 별로 갈려 서로 섞이지 않는다.
+**짧은 앵커 = `transfer`** (동일 프로토콜, 출력 경로가 갈려 섞이지 않음)
+
+| | 학습 | eval | 모델 | 잡 / run |
+|---|---|---|---|---|
+| 우리 모델 | `12_train_ours_transfer` | `13_eval_ours_transfer` | `ours` | 4잡 / 20 run |
+| 대조군 | `14_train_acm_transfer` | `15_eval_acm_transfer` | `acm` | 4잡 / 20 run |
+| baseline | `16_train_baseline_transfer` | `17_eval_baseline_transfer` | act·diffusion·smolvla·acm2 (+act_te) | 16잡 / 100 run |
+
+**리포트**
+
+| 노트북 | 내용 |
+|---|---|
+| `09_report_sr` | SR 표·그림 (Table 1). `TASK` 만 바꾸면 transfer/LIBERO 도 |
+| `10_report_jerk` | 떨림 — 경계/내부 jerk, SPARC, **경계정렬 jerk 프로파일**(헤드라인 그림) |
+| `11_efficiency` | latency·VRAM vs K (어텐션 O(L²) vs Mamba O(L)). **학습 불필요** |
+| **`18_report_horizon`** | **SR vs task horizon** (transfer → insertion) — "길수록 격차가 벌어지는가" |
+| `20`~`21b` | 보조 = LIBERO-10 |
+
+**task 축**: `transfer`(짧) → `insertion`(긺) → `libero_10`(보조).
+Intro 가 *"짧은 task 는 ACT 와 대등, 길수록 우리가 앞선다"* 고 주장하므로 **짧은 쪽(transfer) 도 필요**하다.
+ablation 은 메인(insertion)에서만 돌린다.
 
 **`01`(ours) 다음은 `03`(acm).** 우리 헤드라인 주장이 "plain Mamba 디코더 대비 [XX]p 개선"이라,
 같은 백본에서 carry 를 끈 `acm` 이 **그 수치의 분모**다. 없으면 개선폭을 못 쓴다.
-둘 다 4잡이라 8 GPU 면 `01`+`03` 을 동시에 돌려도 된다.
 
 ## 모델
 
