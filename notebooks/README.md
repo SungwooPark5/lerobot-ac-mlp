@@ -44,7 +44,8 @@
 
 | 노트북 | 하는 일 |
 |---|---|
-| **`19_run_all`** | **4 seed 학습 → 150k ckpt × 5rep × 500ep eval → SR 표**. `TAGS`/`TASK` 만 골라서 그룹별로 재실행 |
+| **`19a_train_all`** | **4 seed 동시 학습** (GPU 4장). `TAGS`/`TASK` 로 그룹 선택 |
+| **`19b_eval_all`** | **150k ckpt × 5rep × 500ep** → SR 표 (`19a` 와 같은 `TAGS`/`TASK` 로) |
 
 **리포트**
 
