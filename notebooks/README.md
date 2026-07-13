@@ -27,7 +27,12 @@
 | 리포트 | — | `09_report_sr` | 전 모델 SR 표·그림 (Table 1) | — |
 | | — | `10_report_jerk` | 떨림 — 경계/내부 jerk, SPARC, **경계정렬 jerk 프로파일**(헤드라인 그림) | — |
 | | — | `11_efficiency` | latency·VRAM vs K (어텐션 O(L²) vs Mamba O(L)). **학습 불필요** | — |
+| **짧은 task** | `12_train_transfer` | `13_eval_transfer` | transfer 에서 같은 모델들 (+ SR vs horizon 그림) | 태그 선택 |
 | 보조 | `20_train_libero_seed{0-3}` | `21_eval_libero` · `21b_*` | LIBERO-10 | — |
+
+**task 축**: `insertion`(메인, 긴 horizon) · `transfer`(짧은 앵커, `12`/`13`) · `libero_10`(보조).
+Intro 가 *"짧은 task 는 ACT 와 대등, 길수록 우리가 앞선다"* 고 주장하므로 **짧은 쪽(transfer) 데이터포인트가 필요**하다.
+출력이 task 별로 갈려 서로 섞이지 않는다.
 
 **`01`(ours) 다음은 `03`(acm).** 우리 헤드라인 주장이 "plain Mamba 디코더 대비 [XX]p 개선"이라,
 같은 백본에서 carry 를 끈 `acm` 이 **그 수치의 분모**다. 없으면 개선폭을 못 쓴다.

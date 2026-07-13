@@ -151,7 +151,11 @@ for _s in ("libero_spatial", "libero_object", "libero_goal", "libero_10", "liber
     FPS_BY_TASK[_s] = 30.0
 
 # ── 방향(2026-07-07 완전최종): 메인 = 실제로봇(so-101) + aloha insertion / 보조 = LIBERO_10(표만) ──
-MAIN_SIM     = "insertion"       # aloha AlohaInsertion-v0 (300스텝, 집기+삽입 = aloha 중 가장 긴 horizon), fps50
+# ── sim task 축 (horizon: 짧음 → 긺) ─────────────────────────────────────────
+#   Intro 주장 = "짧은 task 는 ACT 와 대등, horizon 이 길어질수록 우리가 앞선다."
+#   → 그 주장을 뒷받침하려면 **짧은 쪽 데이터포인트(transfer)도 있어야** 한다.
+SHORT_SIM    = "transfer"        # AlohaTransferCube-v0 — 짧은 앵커. 과거 ACT 가 이겼던 판.
+MAIN_SIM     = "insertion"       # AlohaInsertion-v0 — 집기+삽입 2단계, 더 긴/어려운 horizon (메인)
 SUPPORT_SIM  = "libero_10"       # 보조(표만, 추가분석 X — 교수님). LIBERO-LONG 520스텝, fps30
 MAIN_SEEDS   = [0, 1, 2, 3]      # 학습 seed 4개 (해준 0-1 / 은지 2-3 로 나눠 pooled 가능)
 SUPPORT_SEEDS = [0, 1, 2]        # 보조 3 seed (지금 돌던 것 살림)
@@ -159,7 +163,7 @@ SUPPORT_SEEDS = [0, 1, 2]        # 보조 3 seed (지금 돌던 것 살림)
 
 PRIMARY_SIM = SUPPORT_SIM                        # 하위호환: 기존 LIBERO 노트북(01_train/02b/03c)이 참조 = libero_10
 LIBERO_HORIZON = ["libero_spatial", "libero_goal", "libero_10"]   # 짧→긴 (보조 horizon, 여유 시만)
-SIM_TASKS = ["insertion", "libero_10"]          # 메인 aloha insertion + 보조 libero_10
+SIM_TASKS = [SHORT_SIM, MAIN_SIM, SUPPORT_SIM]  # horizon 축: transfer(짧) → insertion → libero_10(긺)
 
 
 def fps_of(task):
