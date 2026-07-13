@@ -337,18 +337,34 @@ def prefetch_dataset(task=None, force=False):
 
 
 # ── 노트북 2개로 나눠 돌리기 (GPU 2장씩) ─────────────────────────────────────
-#   한 노드에서 창을 두 개 띄울 때, 둘 다 GPU 0,1 을 잡으면 서로 밟는다.
-#   → PART 로 **seed 와 GPU 를 함께** 나눈다. A 창과 B 창이 다른 GPU 를 쓴다.
-PARTS = {
-    "A": {"seeds": [0, 1], "gpus": [0, 1]},
-    "B": {"seeds": [2, 3], "gpus": [2, 3]},
-}
+# seed 만 나누고, **GPU 는 그 노드에 실제로 있는 것**을 0번부터 쓴다.
+#   · 2-GPU 노드 두 대(A 노드 / B 노드) → 양쪽 다 GPU [0,1]. ★우리 클러스터가 이 경우.
+#   · 한 4-GPU 노드에서 A·B 를 동시에 띄울 때만 서로 밟지 않게 GPU 를 직접 나눠줄 것:
+#       SEEDS, GPUS = cf.part('B', gpus=[2, 3])
+# ⚠️ 없는 GPU 를 지정하면 triton 이 `RuntimeError: 0 active drivers` 로 죽는다(장치가 안 보임).
+PART_SEEDS = {"A": [0, 1], "B": [2, 3]}
 
 
-def part(name):
-    """('A'|'B') → (seeds, gpus).  GPU 2장뿐이면 B 는 A 가 끝난 뒤 gpus=[0,1] 로 바꿔 쓸 것."""
-    p = PARTS[name.strip().upper()]
-    return list(p["seeds"]), list(p["gpus"])
+def part(name, gpus=None):
+    """('A'|'B'[, gpus]) → (seeds, gpus).  gpus 생략 시 이 노드의 GPU 를 0번부터 seed 수만큼."""
+    seeds = list(PART_SEEDS[name.strip().upper()])
+    if gpus is None:
+        avail = v23.available_gpus()
+        gpus = list(avail)[: len(seeds)]
+    return seeds, list(gpus)
+
+
+def _check_gpus(gpus):
+    """없는 GPU 를 지정했으면 여기서 잡는다(안 그러면 triton 의 '0 active drivers' 로 죽음)."""
+    avail = set(v23.available_gpus())
+    bad = [g for g in gpus if g not in avail]
+    if bad:
+        raise RuntimeError(
+            f"이 노드에 없는 GPU {bad} 를 지정했다 (보이는 GPU: {sorted(avail)}).\n"
+            "  · 2-GPU 노드라면 cf.part('B') 를 그냥 쓰면 GPU 0,1 로 자동 배정된다.\n"
+            "  · 한 노드에서 A/B 를 동시에 돌릴 때만 cf.part('B', gpus=[2,3]) 처럼 직접 나눌 것.\n"
+            "  (없는 GPU 를 주면 학습 프로세스가 RuntimeError: 0 active drivers 로 죽는다)"
+        )
 
 
 def run_training(tags, seeds=None, task=None, ngpu=None, gpus=None, prefetch=True):
@@ -361,6 +377,7 @@ def run_training(tags, seeds=None, task=None, ngpu=None, gpus=None, prefetch=Tru
     seeds = seeds or MAIN_SEEDS
     task = task or MAIN_SIM
     gpus = list(gpus) if gpus else list(range(ngpu or n_gpu()))
+    _check_gpus(gpus)                       # 없는 GPU → 여기서 즉시 실패(학습 띄운 뒤 죽지 않게)
     if prefetch and not prefetch_dataset(task):
         raise RuntimeError("데이터셋 prefetch 실패 → 병렬 학습을 띄우면 전부 죽는다. 위 로그 확인.")
     jobs = train_jobs(seeds, tags=tags, task=task)
@@ -392,6 +409,7 @@ def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=None, gpus=Non
     gpus=[0,1] → 그 GPU 만 사용(창 2개를 서로 다른 GPU 로 띄울 때).
     """
     gpus = list(gpus) if gpus else list(range(ngpu or n_gpu()))
+    _check_gpus(gpus)
     seeds = seeds or MAIN_SEEDS
     reps = list(range(EVAL_REPEATS)) if reps is None else list(reps)
     task = task or MAIN_SIM
