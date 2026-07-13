@@ -15,6 +15,23 @@
 
 예외: `diffusion` / `smolvla` 만 **각자 원 논문 lr(1e-4)** — 남의 방법을 우리 lr 로 깎으면 baseline 이 불공정.
 
+## ★ GPU 2장씩 나눠 돌리기 — `A_run_seed01` / `B_run_seed23`
+
+GPU 를 2장씩 쓸 땐 **이 두 노트북만** 쓰면 된다. 창 두 개를 동시에 띄우고 각각 실행:
+
+| 창 | seed | GPU | 노트북 |
+|---|---|---|---|
+| **A** | 0, 1 | 0, 1 | `A_run_seed01.ipynb` |
+| **B** | 2, 3 | 2, 3 | `B_run_seed23.ipynb` |
+
+- 두 창이 **다른 GPU** 를 쓰므로 서로 밟지 않는다 (`cf.part('A'/'B')` 가 seed·GPU 를 함께 배정).
+- 결과가 같은 경로에 쌓여 리포트에서 **seed 4개로 자동 pooled**.
+- 각 셀 = 그룹 하나(insertion/transfer × ours/acm/baseline/ablation). 필요한 것만 순서대로.
+- 끊겨도 재실행하면 이어감 (학습 = resume, eval = 끝난 run skip).
+- **GPU 가 2장뿐인 노드**면: A 먼저 끝내고 → B 노트북에서 `GPUS = [0, 1]` 로 바꿔 순차 실행.
+
+아래 개별 노트북은 **그룹 하나만** 따로 볼 때 쓴다(러너와 같은 함수를 부르므로 결과는 동일).
+
 ## 노트북 (task × 모델 그룹마다 학습/eval 이 따로)
 
 **메인 = `insertion`** (긴 horizon)

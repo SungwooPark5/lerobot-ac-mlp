@@ -336,35 +336,62 @@ def prefetch_dataset(task=None, force=False):
     return ok
 
 
-def run_training(tags, seeds=None, task=None, ngpu=None, prefetch=True):
-    """tags x seeds 를 ngpu 청크로 학습(각 청크 끝날 때까지 대기). resume 자동.
+# ── 노트북 2개로 나눠 돌리기 (GPU 2장씩) ─────────────────────────────────────
+#   한 노드에서 창을 두 개 띄울 때, 둘 다 GPU 0,1 을 잡으면 서로 밟는다.
+#   → PART 로 **seed 와 GPU 를 함께** 나눈다. A 창과 B 창이 다른 GPU 를 쓴다.
+PARTS = {
+    "A": {"seeds": [0, 1], "gpus": [0, 1]},
+    "B": {"seeds": [2, 3], "gpus": [2, 3]},
+}
 
-    ngpu=None → 이 노드의 실제 GPU 수(n_gpu())를 씀.
+
+def part(name):
+    """('A'|'B') → (seeds, gpus).  GPU 2장뿐이면 B 는 A 가 끝난 뒤 gpus=[0,1] 로 바꿔 쓸 것."""
+    p = PARTS[name.strip().upper()]
+    return list(p["seeds"]), list(p["gpus"])
+
+
+def run_training(tags, seeds=None, task=None, ngpu=None, gpus=None, prefetch=True):
+    """tags x seeds 를 GPU 수만큼 청크로 학습(각 청크 끝날 때까지 대기). resume 자동.
+
+    gpus=[0,1] → **그 GPU 만** 사용(창 2개를 서로 다른 GPU 로 띄울 때).
+    gpus=None  → ngpu(기본: 이 노드의 GPU 수)만큼 0번부터 사용.
     prefetch=True → 병렬 실행 전에 데이터셋을 한 번 받아둔다(동시 다운로드 레이스 방지).
     """
     seeds = seeds or MAIN_SEEDS
     task = task or MAIN_SIM
-    ngpu = ngpu or n_gpu()
+    gpus = list(gpus) if gpus else list(range(ngpu or n_gpu()))
     if prefetch and not prefetch_dataset(task):
         raise RuntimeError("데이터셋 prefetch 실패 → 병렬 학습을 띄우면 전부 죽는다. 위 로그 확인.")
     jobs = train_jobs(seeds, tags=tags, task=task)
-    print(f"학습 {tags} x seed{seeds} = {len(jobs)}잡  ({STEPS:,} step, lr 고정)")
-    for i in range(0, len(jobs), ngpu):
-        chunk = jobs[i:i + ngpu]
-        print(f"\n===== 청크 {i // ngpu + 1}/{-(-len(jobs) // ngpu)} ({len(chunk)}잡) =====")
-        for j in chunk:
-            print("  ", j)
-        v23.launch_training_live(chunk)
+    n = len(gpus)
+    print(f"학습 {tags} x seed{seeds} = {len(jobs)}잡  (GPU {gpus}, {STEPS:,} step, lr 고정)")
+    for i in range(0, len(jobs), n):
+        chunk = jobs[i:i + n]
+        print(f"\n===== 청크 {i // n + 1}/{-(-len(jobs) // n)} ({len(chunk)}잡) =====")
+        labeled = []
+        for g, (tag, seed, tk) in zip(gpus, chunk):
+            out = v23.train_dir(tag, seed, tk)
+            if v23.get_training_status(tag, seed, tk)["done"]:
+                print(f"  [skip] {v23.run_label(tag, seed, tk)} done")
+                continue
+            if out.exists() and not (out / "train_config.json").exists():
+                import shutil
+                shutil.rmtree(out)                      # 크래시로 남은 빈 디렉토리 정리
+            print(f"   GPU{g}  {v23.run_label(tag, seed, tk)}")
+            labeled.append((v23.run_label(tag, seed, tk), make_train_cmd(tag, seed, tk, g)))
+        if labeled:
+            v23.launch_cmds_live(labeled, log_tag="train")
     print("\n학습 완료:", tags, seeds)
     return jobs
 
 
-def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=None, n_episodes=None):
+def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=None, gpus=None, n_episodes=None):
     """150k 체크포인트 x rep 반복 eval. 이미 끝난 run 은 skip → 재실행 안전.
 
-    ngpu=None → 이 노드의 실제 GPU 수(n_gpu())를 씀.
+    gpus=[0,1] → 그 GPU 만 사용(창 2개를 서로 다른 GPU 로 띄울 때).
     """
-    ngpu = ngpu or n_gpu()
+    gpus = list(gpus) if gpus else list(range(ngpu or n_gpu()))
     seeds = seeds or MAIN_SEEDS
     reps = list(range(EVAL_REPEATS)) if reps is None else list(reps)
     task = task or MAIN_SIM
@@ -372,20 +399,21 @@ def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=None, n_episod
 
     runs = [(t, s, r) for s in seeds for t in tags for r in reps]
     todo = [x for x in runs if rep_sr(x[0], x[1], task, x[2]) is None]
-    print(f"eval {tags} | {CKPT_STEP:,} ckpt x {len(reps)}rep x {len(seeds)}seed x {n}ep")
+    print(f"eval {tags} | {CKPT_STEP:,} ckpt x {len(reps)}rep x {len(seeds)}seed x {n}ep | GPU {gpus}")
     print(f"  전체 {len(runs)} run / 남은 {len(todo)} (완료 {len(runs) - len(todo)})")
 
-    for i in range(0, len(todo), ngpu):
-        chunk = todo[i:i + ngpu]
+    ng = len(gpus)
+    for i in range(0, len(todo), ng):
+        chunk = todo[i:i + ng]
         labeled = []
-        for g, (t, s, r) in enumerate(chunk):
+        for g, (t, s, r) in zip(gpus, chunk):
             try:
                 labeled.append((f"{t}/seed{s}/rep{r}",
                                 repeat_eval_cmd(t, s, r, task=task, gpu_id=g, n_episodes=n)))
             except FileNotFoundError as e:
                 print("  skip:", e)
         if labeled:
-            print(f"\n===== eval 청크 {i // ngpu + 1}/{-(-len(todo) // ngpu)} ({len(labeled)} run) =====")
+            print(f"\n===== eval 청크 {i // ng + 1}/{-(-len(todo) // ng)} ({len(labeled)} run) =====")
             v23.launch_cmds_live(labeled)
     print("\neval 완료:", tags)
 
