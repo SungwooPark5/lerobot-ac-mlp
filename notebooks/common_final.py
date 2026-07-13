@@ -310,23 +310,25 @@ def prefetch_dataset(task=None, force=False):
     import subprocess
     task = task or MAIN_SIM
     repo_id = v23.TASKS[task][0]
-    py = f"""
-from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata, LeRobotDataset
-m = LeRobotDatasetMetadata({repo_id!r})
-ds = LeRobotDataset({repo_id!r})
-print('PREFETCH_OK', {repo_id!r}, 'episodes', ds.num_episodes, 'frames', ds.num_frames)
-"""
-    cmd = (f"HF_HUB_DISABLE_XET=1 PYTHONPATH={v23.SRC_DIR} "
-           f"{v23.PYTHON} -c {json.dumps(py)}")
+    # ⚠️ shell 을 거치지 않고 argv 로 넘긴다. shell=True + 따옴표로 감싸면 여러 줄 코드의
+    #    개행이 리터럴 '\n' 으로 전달돼 SyntaxError 가 난다.
+    py = (
+        "from lerobot.datasets.lerobot_dataset import LeRobotDataset\n"
+        f"ds = LeRobotDataset({repo_id!r})\n"
+        f"print('PREFETCH_OK', {repo_id!r}, 'episodes', ds.num_episodes, 'frames', ds.num_frames)\n"
+    )
+    env = dict(os.environ, HF_HUB_DISABLE_XET="1", PYTHONPATH=str(v23.SRC_DIR), MPLBACKEND="Agg")
     print(f"[prefetch] {repo_id} — 캐시 데우는 중 (첫 실행은 몇 분)…")
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    r = subprocess.run([v23.PYTHON, "-c", py], env=env, capture_output=True, text=True)
     ok = "PREFETCH_OK" in r.stdout
     if ok:
         print("[prefetch]", [l for l in r.stdout.splitlines() if "PREFETCH_OK" in l][0])
     else:
-        print("[prefetch] ⚠️ 실패 — 아래 로그 확인 후 학습을 멈출 것")
+        print("[prefetch] ⚠️ 실패 — 아래 로그 확인 (이 상태로 병렬 학습을 띄우면 전부 죽는다)")
         print((r.stdout or "")[-800:])
         print((r.stderr or "")[-1500:])
+        print("\n터미널에서 직접 받아보려면:")
+        print(f"  HF_HUB_DISABLE_XET=1 PYTHONPATH={v23.SRC_DIR} {v23.PYTHON} - <<'PY'\n{py}PY")
     return ok
 
 
