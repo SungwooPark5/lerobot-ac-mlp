@@ -546,12 +546,16 @@ def sr_table(tags, seeds=None, reps=None, task=None, n_episodes=None, csv_path=N
     return rows
 
 
-def sr_grid_table(tags, task=None, seeds=None, reps=None, steps=None, n_episodes=None,
-                  png_path=None, csv_path=None, figsize_scale=1.0):
-    """스크린샷 형태의 **표 이미지**: 행 = 모델 × step, 열 = eval 1..N + avg.
+def sr_grid_table(tags, task=None, seeds=None, reps=None, step=None, png_path=None,
+                  csv_path=None, model_avg_row=True, figsize_scale=1.0):
+    """표 이미지: **행 = 모델 × seed**, **열 = eval 1..N + avg**.
 
-    각 칸 = 그 eval(rep) 의 SR(%).  seed 가 여러 개면 그 rep 의 **seed 평균**.
-    (seed 별로 다 보고 싶으면 0s_share_transfer 의 20칸 그리드 사용)
+        | model | seed |  1   |  2   |  3   |  4   |  5   |  avg  |
+        | ours  |  0   | 60.8 | 62.0 | 64.2 | 61.4 | 63.0 | 62.28 |
+        |       |  1   | ...                                       |
+        |       | mean | ...                              | 62.10 |   <- 모델 전체 평균
+
+    각 칸 = 그 (seed, eval) 한 run 의 SR(%). 결측은 빈칸, avg 는 있는 것만 평균.
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -559,58 +563,76 @@ def sr_grid_table(tags, task=None, seeds=None, reps=None, steps=None, n_episodes
     task = task or MAIN_SIM
     seeds = seeds or MAIN_SEEDS
     reps = list(range(EVAL_REPEATS)) if reps is None else list(reps)
-    steps = [CKPT_STEP] if steps is None else [int(x) for x in steps]
+    step = CKPT_STEP if step is None else int(step)
 
-    rows, body = [], []
+    rows, body, bold = [], [], []          # bold = 굵게 표시할 행 인덱스(모델 평균)
     for t in tags:
-        for st in steps:
-            cells = []
-            for r in reps:
-                vals = [v for v in (rep_sr(t, sd, task, r, st) for sd in seeds) if v is not None]
-                cells.append(float(np.mean(vals)) if vals else np.nan)
-            if all(np.isnan(c) for c in cells):
-                continue                                   # 이 (모델, step) 은 eval 결과가 없음
-            avg = float(np.nanmean(cells))
-            rows.append((v23.MODEL_DIR_NAMES.get(t, t), f"{st // 1000}k"))
-            body.append(cells + [avg])
+        got_any = False
+        seed_rows = []
+        for sd in seeds:
+            cells = [rep_sr(t, sd, task, r, step) for r in reps]
+            if all(v is None for v in cells):
+                continue
+            got_any = True
+            vals = [np.nan if v is None else float(v) for v in cells]
+            seed_rows.append((str(sd), vals, float(np.nanmean(vals))))
+        if not got_any:
+            continue
+        for sd, vals, avg in seed_rows:
+            rows.append((v23.MODEL_DIR_NAMES.get(t, t), sd))
+            body.append(vals + [avg])
+        if model_avg_row and len(seed_rows) > 1:
+            allv = np.array([v for _, vals, _ in seed_rows for v in vals], dtype=float)
+            per_rep = [float(np.nanmean([vals[i] for _, vals, _ in seed_rows]))
+                       for i in range(len(reps))]
+            rows.append((v23.MODEL_DIR_NAMES.get(t, t), "mean"))
+            body.append(per_rep + [float(np.nanmean(allv))])
+            bold.append(len(rows) - 1)
+
     if not rows:
         print("eval 결과 없음")
         return []
 
-    ncol = len(reps) + 1
-    col_labels = [""] * 2 + [str(r + 1) for r in reps] + ["avg"]
     cell_text = []
     for (mname, sname), vals in zip(rows, body):
-        cell_text.append([mname, sname] + [("" if np.isnan(v) else f"{v:.1f}") for v in vals[:-1]]
-                         + [f"{vals[-1]:.2f}"])
+        cells = [mname, sname]
+        cells += [("" if np.isnan(v) else f"{v:.1f}") for v in vals[:-1]]
+        cells.append("" if np.isnan(vals[-1]) else f"{vals[-1]:.2f}")
+        cell_text.append(cells)
 
-    fig, ax = plt.subplots(figsize=((2 + ncol * 1.25) * figsize_scale,
-                                    (1 + len(rows) * 0.5) * figsize_scale))
+    ncol = len(reps) + 2
+    fig, ax = plt.subplots(figsize=((2 + len(reps) * 1.25) * figsize_scale,
+                                    (1 + len(rows) * 0.45) * figsize_scale))
     ax.axis("off")
     tab = ax.table(cellText=cell_text,
-                   colLabels=["model", "step"] + [str(r + 1) for r in reps] + ["avg"],
+                   colLabels=["model", "seed"] + [str(r + 1) for r in reps] + ["avg"],
                    cellLoc="center", loc="center")
     tab.auto_set_font_size(False)
     tab.set_fontsize(12)
-    tab.scale(1, 1.6)
+    tab.scale(1, 1.55)
 
-    n_steps = len(steps)
+    prev_model = None
     for (i, j), cell in tab.get_celld().items():
         cell.set_edgecolor("#666")
-        if i == 0:                                          # 헤더
+        if i == 0:
             cell.set_facecolor("#e8e8e8")
             cell.set_text_props(weight="bold")
             continue
         r0 = i - 1
-        if j == ncol:                                       # avg 열
-            is_last_step = (r0 % n_steps) == n_steps - 1
-            if is_last_step:
-                cell.set_text_props(weight="bold")          # 최종 step 의 avg 강조
-        if j == 0 and n_steps > 1 and (r0 % n_steps) != 0:  # 모델명은 첫 step 행에만
-            cell.get_text().set_text("")
-            cell.set_linewidth(0)
+        if r0 in bold:                                   # 모델 평균 행
+            cell.set_facecolor("#f4f4f4")
+            cell.set_text_props(weight="bold")
+        if j == ncol - 1 and r0 not in bold:             # avg 열
+            cell.set_text_props(weight="bold")
+    # 모델명은 그 모델의 첫 행에만 표시
+    for r0, (mname, _) in enumerate(rows):
+        if mname == prev_model:
+            c = tab[r0 + 1, 0]
+            c.get_text().set_text("")
+        prev_model = mname
 
-    ax.set_title(f"{task} — SR per eval run (%)   [seeds {seeds}]", fontweight="bold", pad=12)
+    ax.set_title(f"{task} — SR per eval run (%)   [{step // 1000}k checkpoint, {len(reps)} evals]",
+                 fontweight="bold", pad=12)
     fig.tight_layout()
     if png_path:
         Path(png_path).parent.mkdir(parents=True, exist_ok=True)
@@ -621,7 +643,7 @@ def sr_grid_table(tags, task=None, seeds=None, reps=None, steps=None, n_episodes
         Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
         with open(csv_path, "w", newline="", encoding="utf-8") as fh:
             w = _csv.writer(fh)
-            w.writerow(["model", "step"] + [f"eval{r + 1}" for r in reps] + ["avg"])
+            w.writerow(["model", "seed"] + [f"eval{r + 1}" for r in reps] + ["avg"])
             w.writerows(cell_text)
         print("표 CSV   :", csv_path)
     return cell_text
