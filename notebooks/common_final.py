@@ -203,10 +203,18 @@ def act_te_eval_cmd(seed, task, gpu_id=0, n_episodes=None, select="last"):
 TE_FLAGS = ["--policy.temporal_ensemble_coeff=0.01", "--policy.n_action_steps=1"]
 
 
-def eval_rep_dir(tag, seed, task, rep):
-    """rep 별 eval 출력 디렉토리. rep=None 이면 기존 단일 eval 디렉토리."""
+def eval_rep_dir(tag, seed, task, rep, step=None):
+    """rep 별 eval 출력 디렉토리.
+
+    step=None 또는 CKPT_STEP(150k) → `rep{r}`  (기존 결과 경로 그대로)
+    그 외 step(예: 100k)          → `{step//1000}k_rep{r}`  (150k 결과를 덮어쓰지 않게 분리)
+    """
     base = v23.eval_clean_dir(tag, seed, task)
-    return base if rep is None else base / f"rep{rep}"
+    if rep is None:
+        return base
+    if step is None or int(step) == CKPT_STEP:
+        return base / f"rep{rep}"
+    return base / f"{int(step) // 1000}k_rep{rep}"
 
 
 def repeat_eval_cmd(tag, seed, rep, task=None, gpu_id=0, n_episodes=None, step=None):
@@ -225,7 +233,7 @@ def repeat_eval_cmd(tag, seed, rep, task=None, gpu_id=0, n_episodes=None, step=N
         raise FileNotFoundError(f"No {step:,} checkpoint for {src}/{task}/seed{seed}")
     ckpt = v23._pretrained(cd)
 
-    out = eval_rep_dir(tag, seed, task, rep)
+    out = eval_rep_dir(tag, seed, task, rep, step)
     out.mkdir(parents=True, exist_ok=True)
     _ds, env_type, env_task = v23.TASKS[task]
     batch = LIBERO_EVAL_BATCH if str(task).startswith("libero") else min(n, v23.EVAL_BATCH_SIZE)
@@ -257,9 +265,9 @@ def repeat_eval_jobs(tags=None, seeds=None, reps=None, task=None, n_episodes=Non
     return jobs
 
 
-def rep_sr(tag, seed, task, rep):
+def rep_sr(tag, seed, task, rep, step=None):
     """rep 하나의 SR(%) — 없으면 None."""
-    info = eval_rep_dir(tag, seed, task, rep) / "eval_info.json"
+    info = eval_rep_dir(tag, seed, task, rep, step) / "eval_info.json"
     if not info.exists():
         return None
     import json as _json
@@ -267,7 +275,7 @@ def rep_sr(tag, seed, task, rep):
     return None if pc is None else float(pc)
 
 
-def sr_over_reps(tag, task=None, seeds=None, reps=None):
+def sr_over_reps(tag, task=None, seeds=None, reps=None, step=None):
     """반복 eval 집계: {seed: [rep별 SR]}, 전체 평균/표준편차/n.
 
     반환: dict(per_seed={seed: mean}, all=[모든 rep SR], mean, std, n_runs, n_seed)
@@ -278,7 +286,7 @@ def sr_over_reps(tag, task=None, seeds=None, reps=None):
     reps = range(EVAL_REPEATS) if reps is None else reps
     per_seed, allv = {}, []
     for s in seeds:
-        vals = [v for v in (rep_sr(tag, s, task, r) for r in reps) if v is not None]
+        vals = [v for v in (rep_sr(tag, s, task, r, step) for r in reps) if v is not None]
         if vals:
             per_seed[s] = _st.fmean(vals)
             allv += vals
@@ -436,7 +444,8 @@ def resume_status(tags, seeds=None, task=None):
     return todo
 
 
-def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=None, gpus=None, n_episodes=None):
+def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=None, gpus=None, n_episodes=None,
+                     step=None):
     """150k 체크포인트 x rep 반복 eval. 이미 끝난 run 은 skip → 재실행 안전.
 
     gpus=[0,1] → 그 GPU 만 사용(창 2개를 서로 다른 GPU 로 띄울 때).
@@ -448,9 +457,10 @@ def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=None, gpus=Non
     task = task or MAIN_SIM
     n = n_episodes or EVAL_N_EP
 
+    step = CKPT_STEP if step is None else int(step)
     runs = [(t, s, r) for s in seeds for t in tags for r in reps]
-    todo = [x for x in runs if rep_sr(x[0], x[1], task, x[2]) is None]
-    print(f"eval {tags} | {CKPT_STEP:,} ckpt x {len(reps)}rep x {len(seeds)}seed x {n}ep | GPU {gpus}")
+    todo = [x for x in runs if rep_sr(x[0], x[1], task, x[2], step) is None]
+    print(f"eval {tags} | {step:,} ckpt x {len(reps)}rep x {len(seeds)}seed x {n}ep | GPU {gpus}")
     print(f"  전체 {len(runs)} run / 남은 {len(todo)} (완료 {len(runs) - len(todo)})")
 
     ng = len(gpus)
@@ -459,8 +469,8 @@ def run_repeat_evals(tags, seeds=None, reps=None, task=None, ngpu=None, gpus=Non
         labeled = []
         for g, (t, s, r) in zip(gpus, chunk):
             try:
-                labeled.append((f"{t}/seed{s}/rep{r}",
-                                repeat_eval_cmd(t, s, r, task=task, gpu_id=g, n_episodes=n)))
+                labeled.append((f"{t}/seed{s}/rep{r}@{step // 1000}k",
+                                repeat_eval_cmd(t, s, r, task=task, gpu_id=g, n_episodes=n, step=step)))
             except FileNotFoundError as e:
                 print("  skip:", e)
         if labeled:
@@ -492,7 +502,7 @@ def print_ckpt_status(tags, seeds=None, task=None, step=None):
     return not missing
 
 
-def sr_table(tags, seeds=None, reps=None, task=None, n_episodes=None, csv_path=None):
+def sr_table(tags, seeds=None, reps=None, task=None, n_episodes=None, csv_path=None, step=None):
     """반복 eval 집계 표. mean±std(= seed x rep run) + pooled Wilson CI. rows 반환."""
     import csv as _csv
     seeds = seeds or MAIN_SEEDS
@@ -502,7 +512,7 @@ def sr_table(tags, seeds=None, reps=None, task=None, n_episodes=None, csv_path=N
 
     rows = []
     for t in tags:
-        agg = sr_over_reps(t, task=task, seeds=seeds, reps=reps)
+        agg = sr_over_reps(t, task=task, seeds=seeds, reps=reps, step=step)
         if agg["mean"] is None:
             print(f"  {t:<12} (결과 없음)")
             continue
@@ -536,7 +546,88 @@ def sr_table(tags, seeds=None, reps=None, task=None, n_episodes=None, csv_path=N
     return rows
 
 
-def action_trajs(tag, seed, task=None, reps=None):
+def sr_grid_table(tags, task=None, seeds=None, reps=None, steps=None, n_episodes=None,
+                  png_path=None, csv_path=None, figsize_scale=1.0):
+    """스크린샷 형태의 **표 이미지**: 행 = 모델 × step, 열 = eval 1..N + avg.
+
+    각 칸 = 그 eval(rep) 의 SR(%).  seed 가 여러 개면 그 rep 의 **seed 평균**.
+    (seed 별로 다 보고 싶으면 0s_share_transfer 의 20칸 그리드 사용)
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    task = task or MAIN_SIM
+    seeds = seeds or MAIN_SEEDS
+    reps = list(range(EVAL_REPEATS)) if reps is None else list(reps)
+    steps = [CKPT_STEP] if steps is None else [int(x) for x in steps]
+
+    rows, body = [], []
+    for t in tags:
+        for st in steps:
+            cells = []
+            for r in reps:
+                vals = [v for v in (rep_sr(t, sd, task, r, st) for sd in seeds) if v is not None]
+                cells.append(float(np.mean(vals)) if vals else np.nan)
+            if all(np.isnan(c) for c in cells):
+                continue                                   # 이 (모델, step) 은 eval 결과가 없음
+            avg = float(np.nanmean(cells))
+            rows.append((v23.MODEL_DIR_NAMES.get(t, t), f"{st // 1000}k"))
+            body.append(cells + [avg])
+    if not rows:
+        print("eval 결과 없음")
+        return []
+
+    ncol = len(reps) + 1
+    col_labels = [""] * 2 + [str(r + 1) for r in reps] + ["avg"]
+    cell_text = []
+    for (mname, sname), vals in zip(rows, body):
+        cell_text.append([mname, sname] + [("" if np.isnan(v) else f"{v:.1f}") for v in vals[:-1]]
+                         + [f"{vals[-1]:.2f}"])
+
+    fig, ax = plt.subplots(figsize=((2 + ncol * 1.25) * figsize_scale,
+                                    (1 + len(rows) * 0.5) * figsize_scale))
+    ax.axis("off")
+    tab = ax.table(cellText=cell_text,
+                   colLabels=["model", "step"] + [str(r + 1) for r in reps] + ["avg"],
+                   cellLoc="center", loc="center")
+    tab.auto_set_font_size(False)
+    tab.set_fontsize(12)
+    tab.scale(1, 1.6)
+
+    n_steps = len(steps)
+    for (i, j), cell in tab.get_celld().items():
+        cell.set_edgecolor("#666")
+        if i == 0:                                          # 헤더
+            cell.set_facecolor("#e8e8e8")
+            cell.set_text_props(weight="bold")
+            continue
+        r0 = i - 1
+        if j == ncol:                                       # avg 열
+            is_last_step = (r0 % n_steps) == n_steps - 1
+            if is_last_step:
+                cell.set_text_props(weight="bold")          # 최종 step 의 avg 강조
+        if j == 0 and n_steps > 1 and (r0 % n_steps) != 0:  # 모델명은 첫 step 행에만
+            cell.get_text().set_text("")
+            cell.set_linewidth(0)
+
+    ax.set_title(f"{task} — SR per eval run (%)   [seeds {seeds}]", fontweight="bold", pad=12)
+    fig.tight_layout()
+    if png_path:
+        Path(png_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(png_path, dpi=200, bbox_inches="tight")
+        print("표 이미지:", png_path)
+    if csv_path:
+        import csv as _csv
+        Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+            w = _csv.writer(fh)
+            w.writerow(["model", "step"] + [f"eval{r + 1}" for r in reps] + ["avg"])
+            w.writerows(cell_text)
+        print("표 CSV   :", csv_path)
+    return cell_text
+
+
+def action_trajs(tag, seed, task=None, reps=None, step=None):
     """action 궤적(.pt) 수집 — 반복 eval(rep*/actions) 우선, 없으면 단일 eval, 없으면 학습중 eval.
 
     04_report_jerk 가 이걸 통해 rep 5개를 전부 pool 해서 jerk 통계를 냄.
@@ -545,7 +636,7 @@ def action_trajs(tag, seed, task=None, reps=None):
     reps = range(EVAL_REPEATS) if reps is None else reps
     trajs = []
     for r in reps:                                   # 1) 반복 eval
-        trajs += v23._load_action_trajs(eval_rep_dir(tag, seed, task, r) / "actions") or []
+        trajs += v23._load_action_trajs(eval_rep_dir(tag, seed, task, r, step) / "actions") or []
     if trajs:
         return trajs
     trajs = v23._load_action_trajs(v23.eval_clean_dir(tag, seed, task) / "actions") or []
