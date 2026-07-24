@@ -94,6 +94,58 @@ def episode_sparc(traj: np.ndarray, fs: float = 50.0) -> float:
     return sparc(speed, fs)
 
 
+# ── LDJ (log dimensionless jerk) ──────────────────────────────────────────────
+
+def ldj(traj: np.ndarray, fs: float = 50.0) -> float:
+    """Log Dimensionless Jerk of a (T, A) action trajectory (Balasubramanian 2015).
+
+    LDJ = -ln( (T^5 / L^2) * integral(||jerk||^2 dt) ),  scale-/duration-invariant.
+    Larger (less negative) = smoother. Multi-dim: jerk energy summed over action dims,
+    L^2 = peak speed^2 (dimensionless normalizer). Returns 0.0 for degenerate input.
+    """
+    traj = np.asarray(traj, dtype=float)
+    T = traj.shape[0]
+    if T < 5:
+        return 0.0
+    dt = 1.0 / fs
+    duration = (T - 1) * dt
+    speed = np.linalg.norm(np.diff(traj, axis=0), axis=-1)      # (T-1,)
+    peak = float(speed.max())
+    if peak < 1e-9 or duration < 1e-9:
+        return 0.0
+    jerk = finite_jerk(traj) * (fs ** 3)                        # per-step diff -> physical units
+    jerk_sq = np.sum(jerk ** 2, axis=-1)                        # (T,) energy over dims
+    _trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))  # numpy 2.x 는 trapezoid
+    integral = _trapz(jerk_sq, dx=dt)
+    dimensionless = (duration ** 5 / peak ** 2) * integral
+    if dimensionless <= 0:
+        return 0.0
+    return float(-np.log(dimensionless))
+
+
+# ── Sign-flip count (직접 방향 반전 = 떨림) ────────────────────────────────────
+
+def sign_flips(traj: np.ndarray, per_step: bool = True) -> float:
+    """Number of velocity sign reversals, summed over action dims.
+
+    velocity = diff(traj); a flip is where consecutive velocity signs differ (a
+    direction reversal — the visible 'shaking'). per_step=True normalizes by length
+    (flips per step) so episodes of different length are comparable.
+    """
+    traj = np.asarray(traj, dtype=float)
+    if traj.shape[0] < 3:
+        return 0.0
+    vel = np.diff(traj, axis=0)                                 # (T-1, A)
+    sgn = np.sign(vel)
+    sgn[sgn == 0] = 0                                           # zeros don't count as a flip
+    flips = ((sgn[1:] * sgn[:-1]) < 0).sum()                   # sign change per dim
+    flips = float(flips)
+    if per_step:
+        n = max(vel.shape[0] - 1, 1)
+        return flips / n
+    return flips
+
+
 # ── Episode summary ───────────────────────────────────────────────────────────
 
 def trajectory_smoothness(traj: np.ndarray, chunk_size: int, fs: float = 50.0,
@@ -105,8 +157,10 @@ def trajectory_smoothness(traj: np.ndarray, chunk_size: int, fs: float = 50.0,
         "interior_jerk": bij["interior"],
         "boundary_jerk_contrast": bij["contrast"],   # ★ headline
         "boundary_jerk_ratio": bij["ratio"],
-        "jerk_rms": jerk_rms(traj),
-        "sparc": episode_sparc(traj, fs),            # ★ headline (less negative = smoother)
+        "jerk_rms": jerk_rms(traj),                  # ↓ smaller = smoother
+        "ldj": ldj(traj, fs),                        # ↑ larger (less negative) = smoother
+        "sparc": episode_sparc(traj, fs),            # ↑ less negative = smoother
+        "sign_flips": sign_flips(traj),              # ↓ fewer = smoother (per step)
         "n_steps": int(traj.shape[0]),
     }
 
