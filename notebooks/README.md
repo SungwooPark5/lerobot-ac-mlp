@@ -29,7 +29,7 @@
 | **★우리 모델** | `01_train_ours` | `02_eval_ours` | **`ours`** | 4잡 / 20 run |
 | **★대조군** | `03_train_acm` | `04_eval_acm` | `acm` (carry off) | 4잡 / 20 run |
 | baseline | `05_train_baseline` | `06_eval_baseline` | `act`·`diffusion`·`smolvla`·`acm2` (+`act_te` eval만) | 16잡 / 100 run |
-| ablation | `07_train_ablation` | `08_eval_ablation` | `acm_carry`·`acm_bimamba`·`acm_s7` (+표) | 12잡 / 60 run |
+| ablation | `07_train_ablation` | `08_eval_ablation` | `acm_carry`·`acm_bimamba`·`acm_mosaic` (+표) | 12잡 / 60 run |
 
 **짧은 앵커 = `transfer`** — **GPU 2장씩 두 창으로 나눠 돌린다** (`a` = seed 0,1 / GPU 0,1 · `b` = seed 2,3 / GPU 2,3)
 
@@ -74,7 +74,7 @@ ablation 은 메인(insertion)에서만 돌린다.
 |---|---|
 | baseline | `act` · `act_te`(= act ckpt + eval-time TE, 학습 X) · `diffusion` · `smolvla` · `acm2`(Mamba-2 dec) · `acm`(Mamba-1 dec, carry off) |
 | **ours** | `ours` = `acm` + **carry(SSCP)** + **BiMamba** + **MOSAIC**(overlap-add crossfade) |
-| ablation 사다리 | `acm` → `acm_carry` → `acm_bimamba` → `acm_s7` → `ours` |
+| ablation 사다리 | `acm` → `acm_carry` → `acm_bimamba` → `acm_mosaic` → `ours` |
 
 ## 실행
 
@@ -103,7 +103,7 @@ cf.v23.EVAL_FREQ # 0         학습중 eval OFF (수렴 곡선 원하면 10_000)
 cf.GROUP_OURS     # ['ours']
 cf.GROUP_ACM      # ['acm']                                   ← 대조군
 cf.GROUP_BASELINE # ['act', 'diffusion', 'smolvla', 'acm2']
-cf.GROUP_ABLATION # ['acm_carry', 'acm_bimamba', 'acm_s7']
+cf.GROUP_ABLATION # ['acm_carry', 'acm_bimamba', 'acm_mosaic']
 ```
 
 ## 경로

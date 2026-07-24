@@ -1,4 +1,4 @@
-"""S7 — ACM2 literal carry + overlap-add crossfade (inference) + optional overlap-consistency (train).
+"""MOSAIC — ACM2 literal carry + overlap-add crossfade (inference) + optional overlap-consistency (train).
 
 Subclass of ACM2SSCPLiteralSmoothStatePolicy, so it inherits the full State training objective
 (base l1 + optional GT-matched seam loss + optional carry-vs-fresh state loss) AND can be combined
@@ -17,7 +17,7 @@ with BiMamba (use_bimamba_decoder). Two things are added:
 
 Flag summary (all default off -> plain literal-carry train/infer):
   sscp_overlap>0            : overlap-add at inference
-  sscp_overlap_train_weight : train the overlap blend (s7-trained)
+  sscp_overlap_train_weight : train the overlap blend (mosaic-trained)
   sscp_state_weight         : carry-vs-fresh state-continuity loss (s3)
   sscp_smooth_weight        : GT-matched finite-difference seam loss (C1/C2)
   use_bimamba_decoder       : BiMamba decoder
@@ -149,7 +149,7 @@ class ACM2SSCPLiteralSmoothOverlapPolicy(ACM2SSCPLiteralSmoothStatePolicy):
             total_loss = total_loss + lam * l_smooth
             combined["smooth_loss"] = l_smooth.item()
 
-        # ── overlap-consistency term (the s7-trained objective) ──────────────────
+        # ── overlap-consistency term (the mosaic-trained objective) ──────────────────
         # Requires pair_offset = K - overlap so act_n[hop:K] and act_n1[:ov] (carried head)
         # predict the same wall-clock steps GT[i+hop : i+K] = batch_n1[ACTION][:, :ov].
         ov = int(self.config.sscp_overlap)

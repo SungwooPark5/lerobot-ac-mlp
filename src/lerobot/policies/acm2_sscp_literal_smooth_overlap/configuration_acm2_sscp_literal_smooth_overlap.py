@@ -1,4 +1,4 @@
-"""S7 — Config for ACM2 literal carry + overlap-add crossfade.
+"""MOSAIC — Config for ACM2 literal carry + overlap-add crossfade.
 
 Inference (structural): at each chunk boundary the last `sscp_overlap` executed steps of the
 previous chunk are crossfaded with the first `sscp_overlap` steps of the new chunk via a rising
@@ -35,7 +35,7 @@ class ACM2SSCPLiteralSmoothOverlapConfig(ACM2SSCPLiteralSmoothStateConfig):
     # Crossfade window shape for the rising blend weight: "linear" or "hann".
     sscp_overlap_window: str = "linear"
 
-    # Overlap-consistency training weight (the "s7-trained" objective). 0 = inference-only overlap.
+    # Overlap-consistency training weight (the "mosaic-trained" objective). 0 = inference-only overlap.
     # >0 requires the chunk-pair offset = chunk_size - sscp_overlap (set by the train pipeline).
     sscp_overlap_train_weight: float = 0.0
 

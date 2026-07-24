@@ -125,15 +125,15 @@ TRAIN_TAGS = ["act", "diffusion", "smolvla", "acm2", "acm", "ours"]
 GROUP_OURS     = [OURS]                                     # 01/02  우리 모델      (4잡)
 GROUP_ACM      = ["acm"]                                    # 03/04  ★직접 대조군   (4잡)
 GROUP_BASELINE = ["act", "diffusion", "smolvla", "acm2"]    # 05/06  외부 baseline (16잡) + act_te(eval only)
-GROUP_ABLATION = ["acm_carry", "acm_bimamba", "acm_s7"]     # 07/08  사다리 나머지 (12잡)
+GROUP_ABLATION = ["acm_carry", "acm_bimamba", "acm_mosaic"]     # 07/08  사다리 나머지 (12잡)
 TRAIN_ALL      = TRAIN_TAGS                                 # 전부                 (24잡)
 # ★ acm = 같은 백본에서 carry 를 끈 것. "plain Mamba 대비 개선"이 헤드라인 주장이라
 #   이 수치가 없으면 그 주장에 분모가 없다 → ours 다음으로 우선순위 높음.
 
 # ── Ablation 사다리 (논문 필수: 기여 3개를 각각 분리) ──────────────────────────
-#   acm(바닥) → +carry → +BiMamba → +MOSAIC(=ours).  acm_s7 = MOSAIC 을 BiMamba 없이(직교성 확인)
-ABLATION = ["acm", "acm_carry", "acm_bimamba", "acm_s7", "ours"]
-ABLATION_TRAIN = ["acm_carry", "acm_bimamba", "acm_s7"]   # FINAL_TAGS 밖의 추가 학습분 (= GROUP_ABLATION)
+#   acm(바닥) → +carry → +BiMamba → +MOSAIC(=ours).  acm_mosaic = MOSAIC 을 BiMamba 없이(직교성 확인)
+ABLATION = ["acm", "acm_carry", "acm_bimamba", "acm_mosaic", "ours"]
+ABLATION_TRAIN = ["acm_carry", "acm_bimamba", "acm_mosaic"]   # FINAL_TAGS 밖의 추가 학습분 (= GROUP_ABLATION)
 DECISION_PAIR = ("acm_bimamba", "ours")       # carry+BiMamba  vs  +MOSAIC (떨림 제거가 SR 손해 없는가)
 
 FINAL_SEEDS = [0, 1, 2, 3]                   # = MAIN_SEEDS (학습 seed 4개)
@@ -172,7 +172,7 @@ def fps_of(task):
 # 그룹 색 (report용): baseline=검정/회색 계열, mamba 사다리=파랑→초록(ours)
 COLOR = {"act": "#000000", "act_te": "#9467bd", "diffusion": "#d62728", "smolvla": "#ff7f0e",
          "acm2": "#bbbbbb", "acm": "#888888",
-         "acm_carry": "#9ecae1", "acm_s7": "#6baed6", "acm_bimamba": "#1f77b4", "ours": "#2ca02c"}
+         "acm_carry": "#9ecae1", "acm_mosaic": "#6baed6", "acm_bimamba": "#1f77b4", "ours": "#2ca02c"}
 
 
 def train_jobs(seeds, tags=None, task=None):

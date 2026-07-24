@@ -1,4 +1,4 @@
-"""common_v23.py — v23 = smooth 변형 5종 (S3/S2/S7/S6/S5) on eunji ACM2 literal-carry.
+"""common_v23.py — v23 = smooth 변형 5종 (S3/S2/S7=MOSAIC/S6/S5) on eunji ACM2 literal-carry.
 
 v21 literal-carry family(`acm2_sscp_literal[_smooth]`) 위에 얹은 5개 신규 정책. base 코드는
 무수정, 전부 순수 subclass. 자세한 설계 = v23/IMPLEMENTATION_PLAN.md.
@@ -7,7 +7,7 @@ v21 literal-carry family(`acm2_sscp_literal[_smooth]`) 위에 얹은 5개 신규
   smooth    acm2_sscp_literal_smooth             — + GT-매칭 경계 FD 손실 (C1) (v21 baseline)
   s3_state  acm2_sscp_literal_smooth_state       — S3: carry-vs-fresh 상태연속성 손실 ⭐⭐
   s2_spec   acm2_sscp_literal_smooth_spectral    — S2: 주파수도메인(고주파 초과분) 경계 손실 ⭐
-  s7_ovl    acm2_sscp_literal_smooth_overlap     — S7: overlap-add crossfade (추론만) ⭐
+  mosaic    acm2_sscp_literal_smooth_overlap     — MOSAIC(옛 S7): overlap-add crossfade (추론만) ⭐
   s6_blend  acm2_sscp_literal_smooth_blend       — S6: α·carry 선형 상태보간 handoff
   s5_vel    acm2_sscp_literal_smooth_velint      — S5: 증분예측+proprioception 적분 (구조적 C0)
 
@@ -96,9 +96,9 @@ _STATE = lambda w: f"--policy.sscp_state_weight={w}"                 # S3
 _SPEC  = lambda w: f"--policy.sscp_spectral_weight={w}"              # S2
 _SPECHW = lambda n: f"--policy.sscp_spectral_halfwin={n}"
 _SPECHF = lambda f: f"--policy.sscp_spectral_high_frac={f}"
-_OVL   = lambda n: f"--policy.sscp_overlap={n}"                      # S7
+_OVL   = lambda n: f"--policy.sscp_overlap={n}"                      # MOSAIC
 _OVLW  = lambda s: f"--policy.sscp_overlap_window={s}"
-_OLAW  = lambda w: f"--policy.sscp_overlap_train_weight={w}"         # S7-trained (overlap-consistency)
+_OLAW  = lambda w: f"--policy.sscp_overlap_train_weight={w}"         # MOSAIC-trained (overlap-consistency)
 _BIMAMBA_ON = "--policy.use_bimamba_decoder=true"
 _BLEND = lambda a: f"--policy.sscp_blend_alpha={a}"                  # S6
 _BLEARN = "--policy.sscp_blend_learnable=true"
@@ -113,7 +113,7 @@ BASELINE_LR = 1e-4   # diffusion / smolvla 원 논문·lerobot 기본값
 _OV = 10   # overlap steps (K=100 → hop=90)
 
 # ── Model configs: (policy_type, lr, K, extra, use_chunk_pairs) ───────────────
-# The 8-model v23 set. s7 family (infer/train/+s3/+bimamba) is ONE overlap policy + flags.
+# The 8-model v23 set. mosaic family (infer/train/+s3/+bimamba) is ONE overlap policy + flags.
 MODEL_CONFIGS: dict[str, tuple[str, float, int, list[str], bool]] = {
     # ── baselines ──
     "act":  ("act",              LR,   100, [],           False),  # Transformer decoder reference
@@ -125,24 +125,24 @@ MODEL_CONFIGS: dict[str, tuple[str, float, int, list[str], bool]] = {
                   ["--policy.n_action_steps=8", "--policy.n_obs_steps=2"], False),
     # smolvla: VLA. 스크래치 학습은 비현실적 → smolvla_base 파인튜닝(PRETRAINED_INIT).
     "smolvla":   ("smolvla",   BASELINE_LR, 100, [], False),
-    # ── s7 family (overlap policy; carry on) ──
-    "s7_infer": ("acm2_sscp_literal_smooth_overlap", LR, 100,
+    # ── mosaic family (overlap policy; carry on) ──
+    "mosaic_infer": ("acm2_sscp_literal_smooth_overlap", LR, 100,
                  [_CARRY_ON, _OVL(_OV), _OVLW("hann")], True),                       # overlap at inference only
-    "s7_train": ("acm2_sscp_literal_smooth_overlap", LR, 100,
+    "mosaic_train": ("acm2_sscp_literal_smooth_overlap", LR, 100,
                  [_CARRY_ON, _OVL(_OV), _OVLW("hann"), _OLAW(0.1)], True),           # + overlap-consistency training
-    "s7_s3":    ("acm2_sscp_literal_smooth_overlap", LR, 100,
+    "mosaic_s3":    ("acm2_sscp_literal_smooth_overlap", LR, 100,
                  [_CARRY_ON, _OVL(_OV), _OVLW("hann"), _STATE(0.1)], True),          # overlap infer + S3 state loss
     # ── bimamba family ──
     "bimamba":       ("acm2_sscp_literal_bimamba", LR, 100, [_CARRY_ON], True),      # literal carry + BiMamba
-    "bimamba_s7":    ("acm2_sscp_literal_smooth_overlap", LR, 100,
-                      [_CARRY_ON, _OVL(_OV), _OVLW("hann"), _BIMAMBA_ON], True),      # BiMamba + s7 infer
-    "bimamba_s7_s3": ("acm2_sscp_literal_smooth_overlap", LR, 100,
-                      [_CARRY_ON, _OVL(_OV), _OVLW("hann"), _STATE(0.1), _BIMAMBA_ON], True),  # BiMamba + s7 + s3
+    "bimamba_mosaic":    ("acm2_sscp_literal_smooth_overlap", LR, 100,
+                      [_CARRY_ON, _OVL(_OV), _OVLW("hann"), _BIMAMBA_ON], True),      # BiMamba + mosaic infer
+    "bimamba_mosaic_s3": ("acm2_sscp_literal_smooth_overlap", LR, 100,
+                      [_CARRY_ON, _OVL(_OV), _OVLW("hann"), _STATE(0.1), _BIMAMBA_ON], True),  # BiMamba + mosaic + s3
     # ── ★acm (Mamba-1) family — 현재 메인. acm2 보다 acm SR 이 좋아 스택을 Mamba-1 로 포팅 ──
     #    ablation 사다리: acm → +carry → +BiMamba → +MOSAIC(=ours). 각 단계가 논문 기여 1개.
     "acm":            ("acm_sscp_literal", LR, 100, [_CARRY_OFF], False),        # 바닥(plain Mamba dec)
     "acm_carry":      ("acm_sscp_literal", LR, 100, [_CARRY_ON], True),          # +carry(SSCP) 단독
-    "acm_s7":         ("acm_sscp_literal_smooth_overlap", LR, 100,
+    "acm_mosaic":         ("acm_sscp_literal_smooth_overlap", LR, 100,
                        [_CARRY_ON, _OVL(_OV), _OVLW("hann")], True),             # +carry+MOSAIC (BiMamba 없음)
     "acm_bimamba":    ("acm_sscp_literal_bimamba", LR, 100, [_CARRY_ON], True),  # +carry+BiMamba
     "ours":           ("acm_sscp_literal_smooth_overlap", LR, 100,
@@ -156,17 +156,17 @@ MODEL_CONFIGS: dict[str, tuple[str, float, int, list[str], bool]] = {
 MODEL_LABELS = {
     "act":  "ACT (Transformer dec, baseline)",
     "acm2": "acm2 (no carry, baseline)",
-    "s7_infer": "s7 overlap (infer only)",
-    "s7_train": "s7 overlap (trained) ⭐",
-    "s7_s3":    "s7 overlap + s3 state",
+    "mosaic_infer": "mosaic overlap (infer only)",
+    "mosaic_train": "mosaic overlap (trained) ⭐",
+    "mosaic_s3":    "mosaic overlap + s3 state",
     "bimamba":  "BiMamba (literal carry)",
-    "bimamba_s7":    "BiMamba + s7",
-    "bimamba_s7_s3": "BiMamba + s7 + s3 ⭐",
+    "bimamba_mosaic":    "BiMamba + mosaic",
+    "bimamba_mosaic_s3": "BiMamba + mosaic + s3 ⭐",
     "diffusion": "Diffusion Policy (baseline)",
     "smolvla":   "SmolVLA (baseline)",
     "acm":            "ACM (Mamba dec, no carry)",
     "acm_carry":      "ACM + carry",
-    "acm_s7":         "ACM + carry + MOSAIC",
+    "acm_mosaic":         "ACM + carry + MOSAIC",
     "acm_bimamba":    "ACM + carry + BiMamba",
     "ours":           "Ours (carry + BiMamba + MOSAIC) ★",
     "literal":  "Literal carry",
@@ -176,7 +176,7 @@ MODEL_LABELS = {
 
 # ── Phase A 스윕 태그 (seed 0, transfer): λ*/α* 탐색 ─────────────────────────────
 #   각 정책의 핵심 파라미터 1D 그리드. 경계값(weight=0 / α=1 / overlap=0)은 baseline
-#   (headline 태그)이 이미 담당하므로 여기선 생략. s7은 학습 1회(s7_base) + eval-time override.
+#   (headline 태그)이 이미 담당하므로 여기선 생략. mosaic은 학습 1회(mosaic_base) + eval-time override.
 _pw = lambda x: f"{x:g}".replace(".", "p")     # 0.03→'0p03', 0.1→'0p1', 1.0→'1'
 
 
@@ -199,7 +199,7 @@ def _mk_sweep_a():
                      [_CARRY_ON, _VEL("zero")], True)
     sw["s5_state_c1"] = ("acm2_sscp_literal_smooth_velint", LR_CARRY, 100,  # 구조 C0 + 명시 C1 seam
                          [_CARRY_ON, _VEL("state"), _SW(0.1), _SO(1)], True)
-    sw["s7_base"] = ("acm2_sscp_literal_smooth_overlap", LR_CARRY, 100,  # 학습 1회; overlap은 eval override
+    sw["mosaic_base"] = ("acm2_sscp_literal_smooth_overlap", LR_CARRY, 100,  # 학습 1회; overlap은 eval override
                      [_CARRY_ON, _OVL(0)], True)
     return sw
 
@@ -220,28 +220,28 @@ def _sweep_label(tag):
         "s5_state": "S5 velint (anchor=state)",
         "s5_zero": "S5 velint (anchor=zero, ablation)",
         "s5_state_c1": "S5 velint + C1 seam",
-        "s7_base": "S7 overlap base (eval-time sweep)",
+        "mosaic_base": "MOSAIC overlap base (eval-time sweep)",
     }.get(tag, tag)
 
 
 MODEL_LABELS.update({t: _sweep_label(t) for t in _SWEEP_A})
 
-# Phase A 학습 태그 (정책별 그룹 순서). s7_base는 학습 1회(overlap은 eval에서 스윕).
+# Phase A 학습 태그 (정책별 그룹 순서). mosaic_base는 학습 1회(overlap은 eval에서 스윕).
 SWEEP_A_TAGS = (
     [t for t in _SWEEP_A if t.startswith("s3_")]
     + [t for t in _SWEEP_A if t.startswith("s2_")]
     + [t for t in _SWEEP_A if t.startswith("s6_")]
     + [t for t in _SWEEP_A if t.startswith("s5_")]
-    + [t for t in _SWEEP_A if t.startswith("s7_")]
+    + [t for t in _SWEEP_A if t.startswith("mosaic_")]
 )
 
 
 def sweep_tags(policy=None):
-    """Phase A 스윕 학습 태그 리스트. policy in {'s3','s2','s5','s6','s7'} 로 필터(None=전체).
+    """Phase A 스윕 학습 태그 리스트. policy in {'s3','s2','s5','s6','mosaic'} 로 필터(None=전체).
 
-    사용: v23.sweep_tags()      → 전체 Phase A (17 태그: s3×4·s2×4·s6×5·s5×3·s7_base×1)
+    사용: v23.sweep_tags()      → 전체 Phase A (17 태그: s3×4·s2×4·s6×5·s5×3·mosaic_base×1)
           v23.sweep_tags('s3')  → ['s3_w0p03','s3_w0p1','s3_w0p3','s3_w1']
-    ⚠ s7_base는 학습 1회만; overlap 스윕은 make_s7_sweep_eval_cmds()로 eval 단계에서.
+    ⚠ mosaic_base는 학습 1회만; overlap 스윕은 make_mosaic_sweep_eval_cmds()로 eval 단계에서.
     """
     if policy is None:
         return list(SWEEP_A_TAGS)
@@ -257,13 +257,13 @@ CHUNK_FIELD = {"diffusion": "horizon"}     # 나머지는 전부 chunk_size
 PRETRAINED_INIT = {"smolvla": "lerobot/smolvla_base"}
 
 # v23 = 8-model comparison (legacy). lr 은 이제 전 모델 1e-5 통일.
-CORE_TAGS = ["act", "acm2", "s7_infer", "s7_train", "s7_s3",
-             "bimamba", "bimamba_s7", "bimamba_s7_s3"]
+CORE_TAGS = ["act", "acm2", "mosaic_infer", "mosaic_train", "mosaic_s3",
+             "bimamba", "bimamba_mosaic", "bimamba_mosaic_s3"]
 EVAL_TAGS = CORE_TAGS
 
 # Training split across two notebooks (4 + 4) for separate GPU sessions.
-TRAIN_TAGS_A = ["act", "acm2", "s7_infer", "s7_train"]          # 11a — baselines + core s7
-TRAIN_TAGS_B = ["s7_s3", "bimamba", "bimamba_s7", "bimamba_s7_s3"]  # 11b — s7+s3 + BiMamba family
+TRAIN_TAGS_A = ["act", "acm2", "mosaic_infer", "mosaic_train"]          # 11a — baselines + core mosaic
+TRAIN_TAGS_B = ["mosaic_s3", "bimamba", "bimamba_mosaic", "bimamba_mosaic_s3"]  # 11b — mosaic+s3 + BiMamba family
 
 
 # ── GPU allocation guard ──────────────────────────────────────────────────────
@@ -486,8 +486,8 @@ def make_eval_cmd(tag, seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
     return " ".join(parts)
 
 
-# ── S7 overlap: eval-time 스윕 (재학습 X — overlap은 추론 전용 파라미터) ──────────
-def s7_overlap_grid():
+# ── MOSAIC overlap: eval-time 스윕 (재학습 X — overlap은 추론 전용 파라미터) ──────────
+def mosaic_overlap_grid():
     """(overlap, window) 조합. overlap=0=hard switch(baseline). 총 9 조합."""
     combos = [(0, "linear")]
     for ov in (5, 10, 20, 40):
@@ -496,9 +496,9 @@ def s7_overlap_grid():
     return combos
 
 
-def make_s7_sweep_eval_cmds(seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
-                            tag="s7_base", n_episodes=None, select="last"):
-    """s7_base 체크포인트 1개를 overlap/window 조합마다 override해 평가(조합별 out 디렉토리).
+def make_mosaic_sweep_eval_cmds(seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
+                            tag="mosaic_base", n_episodes=None, select="last"):
+    """mosaic_base 체크포인트 1개를 overlap/window 조합마다 override해 평가(조합별 out 디렉토리).
 
     ⚠ run_perturb_eval가 --policy.* override(pretrained config 위 덮어쓰기)를 수용해야 함.
     무시되면 폴백: overlap별 학습 태그 등록(학습 동일하나 GPU 낭비) 또는 eval 스크립트에서
@@ -506,7 +506,7 @@ def make_s7_sweep_eval_cmds(seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
     """
     base = eval_clean_dir(tag, seed, task)
     labeled = []
-    for ov, win in s7_overlap_grid():
+    for ov, win in mosaic_overlap_grid():
         out = base / f"ov{ov}_{win}"
         extra = [f"--policy.sscp_overlap={ov}", f"--policy.sscp_overlap_window={win}"]
         labeled.append((f"{tag}/ov{ov}_{win}",
@@ -515,15 +515,15 @@ def make_s7_sweep_eval_cmds(seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
     return labeled
 
 
-def s7_sweep_jerk(seed=PRIMARY_SEED, task=PRIMARY_TASK, tag="s7_base"):
-    """s7 overlap 스윕의 조합별 매끄러움 지표 표(recorded actions)."""
+def mosaic_sweep_jerk(seed=PRIMARY_SEED, task=PRIMARY_TASK, tag="mosaic_base"):
+    """mosaic overlap 스윕의 조합별 매끄러움 지표 표(recorded actions)."""
     import smooth_metrics as sm
     base = eval_clean_dir(tag, seed, task)
     K = MODEL_CONFIGS[tag][2]
-    print(f"== {task} / S7 overlap 스윕 매끄러움 ==")
+    print(f"== {task} / MOSAIC overlap 스윕 매끄러움 ==")
     print(f"{'combo':<14} {'b-jerk':>8} {'i-jerk':>8} {'contrast':>9} {'SPARC':>9} {'n_ep':>5}")
     print("-" * 60)
-    for ov, win in s7_overlap_grid():
+    for ov, win in mosaic_overlap_grid():
         trajs = _load_action_trajs(base / f"ov{ov}_{win}" / "actions")
         r = sm.aggregate_smoothness(trajs, K, fs=FPS)
         combo = f"ov{ov}/{win}"
