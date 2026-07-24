@@ -26,6 +26,7 @@
 | **2-GPU eval** | — | **`0e_eval_transfer_2gpu`** | `transfer` — **seed 4개 전부 × 5 rep = 20 run** (GPU 2장, 동시 2 run) | 20 run |
 | **팀 공유** | — | **`0s_share_transfer`** | `transfer` 결과 → 표(CSV)·그림(PNG)·요약(MD) → **zip 하나** | — |
 | **LIBERO 수집** | — | **`0l_collect_libero`** | `eval_clean/libero_10` 폴더 스캔 → SR 표·run 목록·떨림 → **zip** | — |
+| **s7→mosaic rename** | — | **`0m_rename_s7_to_mosaic`** | 서버 결과 폴더 중 이름에 `s7` 든 것 → `mosaic` (dry-run→충돌점검→실행→검증) | — |
 | **★우리 모델** | `01_train_ours` | `02_eval_ours` | **`ours`** | 4잡 / 20 run |
 | **★대조군** | `03_train_acm` | `04_eval_acm` | `acm` (carry off) | 4잡 / 20 run |
 | baseline | `05_train_baseline` | `06_eval_baseline` | `act`·`diffusion`·`smolvla`·`acm2` (+`act_te` eval만) | 16잡 / 100 run |
