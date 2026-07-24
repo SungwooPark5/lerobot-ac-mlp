@@ -564,6 +564,10 @@ def eval_main(cfg: EvalPipelineConfig):
     record_dir = os.environ.get("RECORD_DIR")
     actions_dir = Path(record_dir) if record_dir else None
 
+    # Videos are off by default (clean-eval was made fast/OOM-safe by not rendering).
+    # Set RECORD_VIDEOS=<n> to save n episode videos to <output_dir>/videos/.
+    n_videos = int(os.environ.get("RECORD_VIDEOS", "0"))
+
     with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
         info = eval_policy_all(
             envs=envs,
@@ -573,7 +577,7 @@ def eval_main(cfg: EvalPipelineConfig):
             preprocessor=preprocessor,
             postprocessor=postprocessor,
             n_episodes=cfg.eval.n_episodes,
-            max_episodes_rendered=0,  # do not save eval videos
+            max_episodes_rendered=n_videos,   # RECORD_VIDEOS env; 0 = no videos
             videos_dir=Path(cfg.output_dir) / "videos",
             actions_dir=actions_dir,
             start_seed=cfg.seed,

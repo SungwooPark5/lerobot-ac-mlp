@@ -217,10 +217,11 @@ def eval_rep_dir(tag, seed, task, rep, step=None):
     return base / f"{int(step) // 1000}k_rep{rep}"
 
 
-def repeat_eval_cmd(tag, seed, rep, task=None, gpu_id=0, n_episodes=None, step=None):
+def repeat_eval_cmd(tag, seed, rep, task=None, gpu_id=0, n_episodes=None, step=None, n_videos=0):
     """150k(=CKPT_STEP) 체크포인트를 rep 번째 env seed 로 평가하는 커맨드.
 
     tag='act_te' 는 **act 체크포인트**를 재사용하고 TE 플래그만 eval-time 으로 얹음(재학습 X).
+    n_videos>0 이면 그 수만큼 mp4 를 <out>/videos/ 에 저장(RECORD_VIDEOS 환경변수).
     """
     task = task or MAIN_SIM
     step = CKPT_STEP if step is None else step
@@ -241,6 +242,10 @@ def repeat_eval_cmd(tag, seed, rep, task=None, gpu_id=0, n_episodes=None, step=N
     parts = [
         f"CUDA_VISIBLE_DEVICES={gpu_id}", f"MUJOCO_EGL_DEVICE_ID={gpu_id}", "MPLBACKEND=Agg",
         f"RECORD_DIR={out / 'actions'}",
+    ]
+    if n_videos > 0:
+        parts.append(f"RECORD_VIDEOS={int(n_videos)}")   # lerobot_eval: <out>/videos/ 에 mp4 저장
+    parts += [
         f"{v23.PYTHON} -m lerobot.scripts.lerobot_eval", f"--policy.path={ckpt}",
         f"--env.type={env_type}", f"--env.task={env_task}",
         f"--eval.n_episodes={n}", f"--eval.batch_size={batch}",
@@ -248,6 +253,38 @@ def repeat_eval_cmd(tag, seed, rep, task=None, gpu_id=0, n_episodes=None, step=N
         f"--output_dir={out}",
     ]
     if is_te:
+        parts.extend(TE_FLAGS)
+    return " ".join(parts)
+
+
+def record_videos_cmd(tag, seed, task=None, gpu_id=0, n_videos=5, n_episodes=None, step=None):
+    """영상 저장 전용 eval — 150k 체크포인트로 **n_videos 개 에피소드 mp4** 를 저장.
+
+    별도 폴더(eval_clean/<task>/<tag>/seed<N>/videos_rep/videos/)에 저장 → 기존 SR/떨림 결과와 분리.
+    영상은 무겁고 느리므로 rep 반복 없이 **한 번, 적은 에피소드**만.
+    """
+    task = task or MAIN_SIM
+    step = CKPT_STEP if step is None else step
+    n = n_episodes or n_videos           # 영상 개수만큼만 돌리면 충분
+    src = "act" if tag == "act_te" else tag
+    cd = v23.best_ckpt_dir(src, seed, task, how=step)
+    if cd is None:
+        raise FileNotFoundError(f"No {step:,} checkpoint for {src}/{task}/seed{seed}")
+    ckpt = v23._pretrained(cd)
+
+    out = v23.eval_clean_dir(tag, seed, task) / "videos_rep"
+    out.mkdir(parents=True, exist_ok=True)
+    _ds, env_type, env_task = v23.TASKS[task]
+    batch = LIBERO_EVAL_BATCH if str(task).startswith("libero") else min(n, v23.EVAL_BATCH_SIZE)
+    parts = [
+        f"CUDA_VISIBLE_DEVICES={gpu_id}", f"MUJOCO_EGL_DEVICE_ID={gpu_id}", "MPLBACKEND=Agg",
+        f"RECORD_VIDEOS={int(n_videos)}",
+        f"{v23.PYTHON} -m lerobot.scripts.lerobot_eval", f"--policy.path={ckpt}",
+        f"--env.type={env_type}", f"--env.task={env_task}",
+        f"--eval.n_episodes={n}", f"--eval.batch_size={batch}",
+        f"--seed={EVAL_SEED0}", f"--output_dir={out}",
+    ]
+    if tag == "act_te":
         parts.extend(TE_FLAGS)
     return " ".join(parts)
 
