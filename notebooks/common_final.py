@@ -764,6 +764,113 @@ def resolved_ckpt_step(tag, seed, step=150_000):
     return int(cd.name) if cd is not None else None
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# LIBERO 멀티노드 분할 — 노드 3대(GPU 2 / 4 / 4 = 합 10)로 나눠 돌린다.
+#   · 잡(tag,seed)은 서로 독립 → 어느 노드가 돌리든 결과 경로는 (tag,seed)로 고정 → 리포트가 자동 pooled.
+#   · node_split 은 GPU 수 비(2:4:4)로 잡을 결정론적으로 3등분한다(A=적게, B/C=많게).
+#   · 각 노드는 **자기 노드에 보이는 GPU 를 0번부터** 쓴다(하드코딩 금지). run_training_jobs 가 처리.
+# ══════════════════════════════════════════════════════════════════════════════
+LIBERO_SEEDS = [0, 1, 2, 3]                 # 메인 표와 동일 seed 4개
+NODE_GPUS = {"A": 2, "B": 4, "C": 4}        # 우리 클러스터: 노드 3대 = GPU 2 / 4 / 4 (합 10)
+
+
+def libero_all_jobs(tags=None, seeds=None, task=None):
+    """LIBERO 전체 (tag, seed, task) 잡. 기본 = TRAIN_TAGS(6모델) × LIBERO_SEEDS(4) × libero_10 = 24잡."""
+    tags = tags or TRAIN_TAGS
+    seeds = seeds or LIBERO_SEEDS
+    task = task or SUPPORT_SIM
+    return [(t, s, task) for s in seeds for t in tags]
+
+
+def node_split(jobs, weights=None):
+    """잡 리스트를 GPU 가중치(기본 2:4:4)로 노드별 버킷으로 나눈다(결정론적). {'A':[...], 'B':[...], 'C':[...]}."""
+    weights = weights or NODE_GPUS
+    names = list(weights)
+    total = sum(weights.values())
+    n = len(jobs)
+    out, start, acc = {}, 0, 0
+    for i, name in enumerate(names):
+        acc += weights[name]
+        end = n if i == len(names) - 1 else round(n * acc / total)
+        out[name] = jobs[start:end]
+        start = end
+    return out
+
+
+def node_jobs(node, tags=None, seeds=None, task=None, weights=None):
+    """이 노드(A/B/C)가 맡을 LIBERO 잡 리스트."""
+    return node_split(libero_all_jobs(tags, seeds, task), weights)[node.strip().upper()]
+
+
+def run_training_jobs(jobs, gpus, prefetch_task=None, prefetch=True):
+    """명시적 (tag,seed,task) 잡 리스트를 주어진 로컬 GPU 로 학습(resume/skip/청크 자동).
+
+    run_training 과 동일 로직이지만 tags×seeds 대신 **잡을 직접** 받는다(멀티노드 분할용).
+    gpus=[0,1] → 이 노드에서 보이는 GPU. prefetch=True → 병렬 전에 데이터셋 한 번 받아둠(레이스 방지).
+    """
+    jobs = list(jobs)
+    gpus = list(gpus)
+    _check_gpus(gpus)
+    if prefetch and jobs:
+        pt = prefetch_task or jobs[0][2]
+        if not prefetch_dataset(pt):
+            raise RuntimeError("데이터셋 prefetch 실패 → 병렬 학습을 띄우면 전부 죽는다. 위 로그 확인.")
+    n = len(gpus)
+    print(f"학습 {len(jobs)}잡  (GPU {gpus}, {STEPS:,} step, lr 고정)")
+    for i in range(0, len(jobs), n):
+        chunk = jobs[i:i + n]
+        print(f"\n===== 청크 {i // n + 1}/{-(-len(jobs) // n)} ({len(chunk)}잡) =====")
+        labeled = []
+        for g, (tag, seed, tk) in zip(gpus, chunk):
+            out = v23.train_dir(tag, seed, tk)
+            done = v23.last_ckpt_step(out)
+            if done is not None and done >= CKPT_STEP:
+                print(f"  [skip] {v23.run_label(tag, seed, tk)} — 이미 {done:,} 완료")
+                continue
+            v23.clean_if_no_ckpt(out)
+            mode = f"resume @{done:,}" if done else "새로 시작"
+            print(f"   GPU{g}  {v23.run_label(tag, seed, tk):<28} {mode}")
+            labeled.append((v23.run_label(tag, seed, tk), make_train_cmd(tag, seed, tk, g)))
+        if labeled:
+            v23.launch_cmds_live(labeled, log_tag="train")
+    print("\n학습 완료:", len(jobs), "잡")
+    return jobs
+
+
+def run_libero_eval_jobs(pairs, gpus, task=None, n_episodes=None, reps=None, step=None, n_videos=0):
+    """명시적 (tag,seed) 쌍을 LIBERO eval (150k 체크포인트, 기본 500ep, 이미 끝난 run 은 skip).
+
+    repeat_eval_cmd 재사용 → action(.pt) 기록(jerk 측정) + env seed 를 rep 마다 바꿈.
+    reps=[0] (기본) 이면 rep 없이 1회. 결과 = eval_clean_dir → 09_report_sr 가 자동 pooled.
+    """
+    pairs = list(pairs)
+    gpus = list(gpus)
+    _check_gpus(gpus)
+    task = task or SUPPORT_SIM
+    n = n_episodes or EVAL_N_EP
+    reps = [0] if reps is None else list(reps)
+    step = CKPT_STEP if step is None else int(step)
+    runs = [(t, s, r) for (t, s) in pairs for r in reps]
+    todo = [x for x in runs if rep_sr(x[0], x[1], task, x[2], step) is None]
+    print(f"LIBERO eval {len(pairs)}쌍 × {len(reps)}rep × {n}ep | {step:,} ckpt | GPU {gpus}")
+    print(f"  전체 {len(runs)} run / 남은 {len(todo)} (완료 {len(runs) - len(todo)})")
+    ng = len(gpus)
+    for i in range(0, len(todo), ng):
+        chunk = todo[i:i + ng]
+        labeled = []
+        for g, (t, s, r) in zip(gpus, chunk):
+            try:
+                labeled.append((f"{t}/seed{s}/rep{r}",
+                                repeat_eval_cmd(t, s, r, task=task, gpu_id=g,
+                                                n_episodes=n, step=step, n_videos=n_videos)))
+            except FileNotFoundError as e:
+                print("  skip:", e)
+        if labeled:
+            print(f"\n===== eval 청크 {i // ng + 1}/{-(-len(todo) // ng)} ({len(labeled)} run) =====")
+            v23.launch_cmds_live(labeled)
+    print("\nLIBERO eval 완료:", len(pairs), "쌍")
+
+
 def check_tags():
     """FINAL_TAGS + ABLATION 이 전부 v23.MODEL_CONFIGS 에 있는지 확인 + 요약(정책/lr/K) 출력."""
     tags = FINAL_TAGS + [t for t in ABLATION if t not in FINAL_TAGS]

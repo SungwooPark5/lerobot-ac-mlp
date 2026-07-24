@@ -2,6 +2,21 @@
 
 이 폴더 하나로 **학습 → eval → 표/그림**이 전부 재현된다. 브랜치 = `ecd-final`.
 
+## 폴더 구성
+
+```
+notebooks/
+  common_final.py · common_v23.py · smooth_metrics.py   드라이버(수정 대상 아님)
+  00_smoke.ipynb                    preflight — 여기부터
+  insertion/   메인(긴 horizon)    01~08  학습/eval (ours·acm·baseline·ablation)
+  transfer/    짧은 앵커            12~17 (GPU 2장씩 a/b) · 19a/19b(4-GPU 한번에) · 0e/0r/0s
+  libero/      보조(LIBERO-10)      train_node{A,B,C} · eval_node{A,B,C}  ← 노드 2/4/4 GPU 분할
+  reports/     표·그림              09_sr · 10_jerk · 11_efficiency · 18_horizon
+  utils/       유틸                 0l_collect_libero · 0m_rename_s7_to_mosaic · 0v_record_videos
+```
+
+> 어느 하위폴더에서 열어도 `import common_final` 이 자동으로 상위 `notebooks/` 를 찾는다 — cwd 신경 쓸 필요 없음.
+
 ## 프로토콜 (전 그룹 공통)
 
 | | |
@@ -15,44 +30,54 @@
 
 예외: `diffusion` / `smolvla` 만 **각자 원 논문 lr(1e-4)** — 남의 방법을 우리 lr 로 깎으면 baseline 이 불공정.
 
-## 노트북 (task × 모델 그룹마다 학습/eval 이 따로)
-
-**메인 = `insertion`** (긴 horizon)
+## `insertion/` — 메인 (긴 horizon, GPU 4장)
 
 | | 학습 | eval | 모델 | 잡 / run |
 |---|---|---|---|---|
-| preflight | `00_smoke` | — | — | CUDA·mamba_ssm·**carry parity 테스트** |
-| **이어학습** | **`0r_resume_train`** | — | `transfer` — 끊긴 학습을 **마지막 체크포인트부터** (끝난 seed skip) | — |
-| **2-GPU eval** | — | **`0e_eval_transfer_2gpu`** | `transfer` — **seed 4개 전부 × 5 rep = 20 run** (GPU 2장, 동시 2 run) | 20 run |
-| **팀 공유** | — | **`0s_share_transfer`** | `transfer` 결과 → 표(CSV)·그림(PNG)·요약(MD) → **zip 하나** | — |
-| **LIBERO 수집** | — | **`0l_collect_libero`** | `eval_clean/libero_10` 폴더 스캔 → SR 표·run 목록·떨림 → **zip** | — |
-| **s7→mosaic rename** | — | **`0m_rename_s7_to_mosaic`** | 서버 결과 폴더 중 이름에 `s7` 든 것 → `mosaic` (dry-run→충돌점검→실행→검증) | — |
+| preflight | `00_smoke` (루트) | — | — | CUDA·mamba_ssm·**carry parity 테스트** |
 | **★우리 모델** | `01_train_ours` | `02_eval_ours` | **`ours`** | 4잡 / 20 run |
 | **★대조군** | `03_train_acm` | `04_eval_acm` | `acm` (carry off) | 4잡 / 20 run |
 | baseline | `05_train_baseline` | `06_eval_baseline` | `act`·`diffusion`·`smolvla`·`acm2` (+`act_te` eval만) | 16잡 / 100 run |
 | ablation | `07_train_ablation` | `08_eval_ablation` | `acm_carry`·`acm_bimamba`·`acm_mosaic` (+표) | 12잡 / 60 run |
 
-**짧은 앵커 = `transfer`** — **GPU 2장씩 두 창으로 나눠 돌린다** (`a` = seed 0,1 / GPU 0,1 · `b` = seed 2,3 / GPU 2,3)
+## `transfer/` — 짧은 앵커 (GPU 2장씩 두 창 `a`/`b` 로 분할)
+
+`a` = seed 0,1 · `b` = seed 2,3. 두 창은 다른 GPU 를 쓰므로 동시에 띄워도 안 밟는다(`cf.part('A'/'B')`).
 
 | | 학습 | eval | 모델 | 창당 잡 / run |
 |---|---|---|---|---|
 | 우리 모델 | `12a` · `12b` | `13a` · `13b` | `ours` | 2잡 / 10 run |
 | 대조군 | `14a` · `14b` | `15a` · `15b` | `acm` | 2잡 / 10 run |
 | baseline | `16a` · `16b` | `17a` · `17b` | act·diffusion·smolvla·acm2 (+act_te) | 8잡 / 50 run |
+| **한번에(4-GPU)** | `19a_train_all` | `19b_eval_all` | `TAGS`/`TASK` 로 선택, 4 seed 동시 | — |
+| 이어학습 | `0r_resume_train` | — | 끊긴 학습 → 마지막 ckpt 부터 (끝난 seed skip) | — |
+| 2-GPU eval | — | `0e_eval_transfer_2gpu` | seed 4개 × 5 rep = 20 run (GPU 2장) | 20 run |
+| 팀 공유 | — | `0s_share_transfer` | 결과 → 표·그림·요약 → **zip 하나** | — |
 
-- `a` 창과 `b` 창은 **다른 GPU** 를 쓰므로 동시에 띄워도 안 밟는다(`cf.part('A'/'B')` 가 seed·GPU 동시 배정).
-- 둘 다 끝나면 seed 4개가 모여 리포트에서 **자동 pooled**.
-- insertion(`01`~`08`)은 GPU 4장을 그대로 쓴다 — 그게 도는 동안엔 transfer 를 띄우지 말 것.
-- GPU 2장뿐인 노드면: `a` 를 끝낸 뒤 `b` 에서 `GPUS = [0, 1]` 로 바꿔 순차 실행.
+## `libero/` — 보조 (LIBERO-10, 노드 3대 = GPU **2 / 4 / 4** 분할)
 
-**한 번에 돌리기 (4-GPU 노드)**
+6모델 × 4 seed = **24잡**을 GPU 비율(2:4:4)로 세 노드에 자동 분배 → 노드 A=5, B=9, C=10잡.
+세 노드에서 각자 자기 노트북을 열고 실행하면 겹침 없이 병렬로 돈다.
+
+| 노드 | GPU | 학습 | eval | 몫 |
+|---|---|---|---|---|
+| A | 2 | `train_nodeA` | `eval_nodeA` | 5잡 |
+| B | 4 | `train_nodeB` | `eval_nodeB` | 9잡 |
+| C | 4 | `train_nodeC` | `eval_nodeC` | 10잡 |
+
+- 학습은 데이터셋만, **eval 은 LIBERO 시뮬 필요**. eval = 150k ckpt × **500ep** + action(.pt)→떨림.
+- 잡은 (모델,seed) 단위로 독립 → 결과는 `eval_clean/libero_10/…` 에 모여 리포트가 자동 pooled.
+- 분배 비율은 `cf.NODE_GPUS = {'A':2,'B':4,'C':4}` 에서 바꾼다.
+
+## `utils/`
 
 | 노트북 | 하는 일 |
 |---|---|
-| **`19a_train_all`** | **`transfer` 4 seed 동시 학습** (GPU 4장). `TAGS` 로 그룹, `TASK` 로 task 선택 |
-| **`19b_eval_all`** | **`transfer` 150k ckpt × 5rep × 500ep** → SR 표 (`19a` 와 같은 `TAGS`/`TASK`) |
+| `0l_collect_libero` | `eval_clean/libero_10` 스캔 → SR 표·run 목록·떨림(jerk/LDJ/SPARC/SignFlip) → **zip** |
+| `0m_rename_s7_to_mosaic` | 서버 결과 폴더 중 이름에 `s7` 든 것 → `mosaic` (dry-run→충돌점검→실행→검증) |
+| `0v_record_videos` | 150k ckpt 로 에피소드 mp4 저장 (기존 SR/떨림 결과와 분리) |
 
-**리포트**
+## `reports/` — 표·그림
 
 | 노트북 | 내용 |
 |---|---|
@@ -60,7 +85,6 @@
 | `10_report_jerk` | 떨림 — 경계/내부 jerk, SPARC, **경계정렬 jerk 프로파일**(헤드라인 그림) |
 | `11_efficiency` | latency·VRAM vs K (어텐션 O(L²) vs Mamba O(L)). **학습 불필요** |
 | **`18_report_horizon`** | **SR vs task horizon** (transfer → insertion) — "길수록 격차가 벌어지는가" |
-| `20`~`21b` | 보조 = LIBERO-10 |
 
 **task 축**: `transfer`(짧) → `insertion`(긺) → `libero_10`(보조).
 Intro 가 *"짧은 task 는 ACT 와 대등, 길수록 우리가 앞선다"* 고 주장하므로 **짧은 쪽(transfer) 도 필요**하다.
@@ -84,7 +108,9 @@ ablation 은 메인(insertion)에서만 돌린다.
 python tests/test_acm_sscp_literal.py
 
 # 1) 노트북
-cd notebooks && jupyter lab      # 00 -> 01/02(ours) -> 03/04(acm) -> 05/06, 07/08 -> 09/10/11
+cd notebooks && jupyter lab
+#   00_smoke -> insertion/01,02(ours) -> 03,04(acm) -> 05~08 -> reports/09,10,11
+#   LIBERO 는 세 노드에서 libero/train_node{A,B,C} (그다음 eval_node{A,B,C})
 ```
 
 - **끊겨도 안전**: 학습은 `--resume` 자동, eval 은 끝난 run(`eval_info.json`) 자동 skip.
@@ -120,5 +146,5 @@ cf.GROUP_ABLATION # ['acm_carry', 'acm_bimamba', 'acm_mosaic']
 ## 의존성
 
 - `mamba-ssm` (CUDA 전용 커널) — Mamba 계열 정책 전부 필요
-- LIBERO eval 만 별도 시뮬 설치 필요 (보조 실험. 설치 노트북은 레포에 포함하지 않음)
+- LIBERO **eval** 만 별도 시뮬(robosuite/libero) 설치 필요 (학습은 데이터셋만. 설치 노트북은 레포에 포함하지 않음)
 - 데이터셋은 HF 참조: `lerobot/aloha_sim_insertion_human` · `HuggingFaceVLA/libero` · `eejjii/*`(so-101)
