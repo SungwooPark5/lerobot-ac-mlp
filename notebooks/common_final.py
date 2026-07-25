@@ -802,6 +802,31 @@ def node_jobs(node, tags=None, seeds=None, task=None, weights=None):
     return node_split(libero_all_jobs(tags, seeds, task), weights)[node.strip().upper()]
 
 
+def libero_trained_pairs(tags=None, seeds=None, task=None, step=None):
+    """**실제로 체크포인트가 있는** (tag, seed) 만 반환 — eval-only 분배용.
+
+    학습이 몇 seed 까지 됐든(3개/4개), 어떤 모델이 빠졌든 있는 것만 골라낸다.
+    step 근처(기본 150k)의 체크포인트가 있으면 포함. best_ckpt_dir 가 없으면 None → 제외.
+    ⚠️ 이 노드에서 보이는 경로만 스캔 → 노드 간 공유 FS 를 가정(대개 클러스터 표준).
+    """
+    tags = tags or TRAIN_TAGS
+    seeds = seeds or LIBERO_SEEDS
+    task = task or SUPPORT_SIM
+    step = CKPT_STEP if step is None else step
+    out = []
+    for s in seeds:
+        for t in tags:
+            if v23.best_ckpt_dir(t, s, task, how=step) is not None:
+                out.append((t, s))
+    return out
+
+
+def libero_eval_node_pairs(node, weights=None, tags=None, seeds=None, task=None, step=None):
+    """eval-only: 학습된 (tag,seed) 를 탐색해 GPU 비(2:4:4)로 나눈 뒤 이 노드 몫을 반환."""
+    pairs = libero_trained_pairs(tags, seeds, task, step)
+    return node_split(pairs, weights)[node.strip().upper()]
+
+
 def run_training_jobs(jobs, gpus, prefetch_task=None, prefetch=True):
     """명시적 (tag,seed,task) 잡 리스트를 주어진 로컬 GPU 로 학습(resume/skip/청크 자동).
 

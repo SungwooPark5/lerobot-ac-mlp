@@ -10,7 +10,7 @@ notebooks/
   00_smoke.ipynb                    preflight — 여기부터
   insertion/   메인(긴 horizon)    01~08  학습/eval (ours·acm·baseline·ablation)
   transfer/    짧은 앵커            12~17 (GPU 2장씩 a/b) · 19a/19b(4-GPU 한번에) · 0e/0r/0s
-  libero/      보조(LIBERO-10)      train_node{A,B,C} · eval_node{A,B,C}  ← 노드 2/4/4 GPU 분할
+  libero/      보조(LIBERO-10)      eval_node{A,B,C}  ← 학습된 ckpt eval, 노드 2/4/4 GPU 분할
   reports/     표·그림              09_sr · 10_jerk · 11_efficiency · 18_horizon
   utils/       유틸                 0l_collect_libero · 0m_rename_s7_to_mosaic · 0v_record_videos
 ```
@@ -54,20 +54,20 @@ notebooks/
 | 2-GPU eval | — | `0e_eval_transfer_2gpu` | seed 4개 × 5 rep = 20 run (GPU 2장) | 20 run |
 | 팀 공유 | — | `0s_share_transfer` | 결과 → 표·그림·요약 → **zip 하나** | — |
 
-## `libero/` — 보조 (LIBERO-10, 노드 3대 = GPU **2 / 4 / 4** 분할)
+## `libero/` — 보조 eval (LIBERO-10, **이미 학습된 ckpt**, 노드 2/4/4 GPU 분할)
 
-6모델 × 4 seed = **24잡**을 GPU 비율(2:4:4)로 세 노드에 자동 분배 → 노드 A=5, B=9, C=10잡.
-세 노드에서 각자 자기 노트북을 열고 실행하면 겹침 없이 병렬로 돈다.
+학습은 안 한다 — **기존 체크포인트로 eval 만**. 세 노드에서 각자 `eval_node{A,B,C}` 실행.
 
-| 노드 | GPU | 학습 | eval | 몫 |
-|---|---|---|---|---|
-| A | 2 | `train_nodeA` | `eval_nodeA` | 5잡 |
-| B | 4 | `train_nodeB` | `eval_nodeB` | 9잡 |
-| C | 4 | `train_nodeC` | `eval_nodeC` | 10잡 |
+| 노드 | GPU | eval |
+|---|---|---|
+| A | 2 | `eval_nodeA` |
+| B | 4 | `eval_nodeB` |
+| C | 4 | `eval_nodeC` |
 
-- 학습은 데이터셋만, **eval 은 LIBERO 시뮬 필요**. eval = 150k ckpt × **500ep** + action(.pt)→떨림.
+- **탐색 → 분배**: 실제로 체크포인트 있는 `(모델,seed)` 를 찾아(`cf.libero_trained_pairs`) GPU 비(2:4:4)로 나눔 → seed 3개든 4개든 있는 것만 자동으로 맞춤.
+- eval = **150k ckpt × 500ep** + action(.pt)→떨림(jerk/LDJ/SPARC/SignFlip). **LIBERO 시뮬 필요**.
 - 잡은 (모델,seed) 단위로 독립 → 결과는 `eval_clean/libero_10/…` 에 모여 리포트가 자동 pooled.
-- 분배 비율은 `cf.NODE_GPUS = {'A':2,'B':4,'C':4}` 에서 바꾼다.
+- 노드 간 **공유 FS 가정**(한 노드에서 모든 ckpt 가 보여야 분배 일관). 비율은 `cf.NODE_GPUS` 에서 조정.
 
 ## `utils/`
 
