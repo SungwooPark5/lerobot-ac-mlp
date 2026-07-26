@@ -10,7 +10,7 @@ notebooks/
   00_smoke.ipynb                    preflight — 여기부터
   insertion/   메인(긴 horizon)    01~08  학습/eval (ours·acm·baseline·ablation)
   transfer/    짧은 앵커            12~17 (GPU 2장씩 a/b) · 19a/19b(4-GPU 한번에) · 0e/0r/0s
-  libero/      보조(LIBERO-10)      eval_node1_4gpu · eval_node2_4gpu · eval_node3_2gpu  ← 학습된 ckpt eval
+  libero/      보조(LIBERO-10)      eval_node1_4gpu · eval_node2_4gpu  ← 학습된 4모델 eval (GPU 4+4)
   reports/     표·그림              09_sr · 10_jerk · 11_efficiency · 18_horizon
   utils/       유틸                 0l_collect_libero · 0m_rename_s7_to_mosaic · 0v_record_videos
 ```
@@ -54,19 +54,19 @@ notebooks/
 | 2-GPU eval | — | `0e_eval_transfer_2gpu` | seed 4개 × 5 rep = 20 run (GPU 2장) | 20 run |
 | 팀 공유 | — | `0s_share_transfer` | 결과 → 표·그림·요약 → **zip 하나** | — |
 
-## `libero/` — 보조 eval (LIBERO-10, **이미 학습된 ckpt**, 노드 3대 나눠서)
+## `libero/` — 보조 eval (LIBERO-10, **이미 학습된 4모델**, 노드 2대 GPU 4+4)
 
-학습은 안 한다 — **기존 체크포인트로 eval 만**. 세 노드에서 각자 자기 노트북 하나씩 실행.
+학습은 안 한다 — **기존 체크포인트로 eval 만**. 학습된 4모델 = `acm` · `act` · `bimamba` · `bimamba_s7`.
 
 | 노트북 | GPU | eval 몫 |
 |---|---|---|
-| `eval_node1_4gpu` | 4 | 10 |
-| `eval_node2_4gpu` | 4 | 9 |
-| `eval_node3_2gpu` | 2 | 5 |
+| `eval_node1_4gpu` | 4 | seed 0·1 (8 eval) |
+| `eval_node2_4gpu` | 4 | seed 2·3 (8 eval) |
 
-- 전체 6모델 × 4 seed = **24 eval** 을 GPU 비(4:4:2)로 세 노드에 나눔(`cf.split_by_gpu`).
+- 전체 4모델 × 4 seed(0-3) = **16 eval** 을 GPU 비(4:4)로 8/8 나눔(`cf.split_by_gpu`).
 - eval = **150k ckpt × 500ep** + action(.pt)→떨림(jerk/LDJ/SPARC/SignFlip). **LIBERO 시뮬 필요**.
-- 체크포인트 없거나 이미 끝난 eval 은 자동 skip → 재실행 안전. 결과는 `eval_clean/libero_10/…` 에 모여 리포트가 자동 pooled.
+- 체크포인트 없거나 이미 끝난 eval 은 자동 skip → 재실행 안전. 결과는 `eval_clean/libero_10/…` 에 모여 리포트 자동 pooled.
+- `bimamba_s7` 은 rename 전 폴더명 그대로 사용(노트북이 태그를 자동 등록). 나중에 `utils/0m` 돌리면 mosaic 으로 통일.
 
 ## `utils/`
 
