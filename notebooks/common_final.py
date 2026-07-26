@@ -827,6 +827,22 @@ def libero_eval_node_pairs(node, weights=None, tags=None, seeds=None, task=None,
     return node_split(pairs, weights)[node.strip().upper()]
 
 
+def split_by_gpu(items, gpu_counts):
+    """items 리스트를 gpu_counts 비율로 연속 3등분(결정론적). 예: 24개, [4,4,2] → [10, 9, 5].
+
+    노드별 eval 노트북이 '내가 몇 번째 노드' 만 정하면 자기 몫을 이 함수로 뽑는다.
+    """
+    n = len(items)
+    total = sum(gpu_counts)
+    out, start, acc = [], 0, 0
+    for i, g in enumerate(gpu_counts):
+        acc += g
+        end = n if i == len(gpu_counts) - 1 else round(n * acc / total)
+        out.append(items[start:end])
+        start = end
+    return out
+
+
 def run_training_jobs(jobs, gpus, prefetch_task=None, prefetch=True):
     """명시적 (tag,seed,task) 잡 리스트를 주어진 로컬 GPU 로 학습(resume/skip/청크 자동).
 
