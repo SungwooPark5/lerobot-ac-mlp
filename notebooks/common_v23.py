@@ -552,12 +552,14 @@ def launch_cmds_live(labeled_cmds, log_tag="job", quiet=False):
     for label, cmd in labeled_cmds:
         safe = label.replace("/", "__")
         log_path = log_dir / f"{log_tag}__{safe}.log"
+        # ⚠️ cmd 가 `train && eval` 처럼 && 체인이면, `cmd >> log` 는 **마지막 명령에만** 리다이렉트
+        #    걸려 앞(train) 출력이 셀로 샌다. 전체를 서브셸 `(...)` 로 묶어 리다이렉트가 둘 다 잡게 한다.
         if quiet:
             # 성공은 무출력, 실패만 한 줄(로그 경로 포함)
-            parts.append(f"({env_prefix} {cmd} >> {log_path} 2>&1 || echo '[{label}] 실패 ❌ (log: {log_path})')")
+            parts.append(f"( ({env_prefix} {cmd}) >> {log_path} 2>&1 || echo '[{label}] 실패 ❌ (log: {log_path})' )")
         else:
             print(f"[{label}]  (log: {log_path})")
-            parts.append(f"({env_prefix} {cmd} >> {log_path} 2>&1 && echo '[{label}] 완료 ✅' || echo '[{label}] 실패 ❌')")
+            parts.append(f"( ({env_prefix} {cmd}) >> {log_path} 2>&1 && echo '[{label}] 완료 ✅' || echo '[{label}] 실패 ❌' )")
     if not parts:
         if not quiet:
             print("실행할 명령 없음.")
