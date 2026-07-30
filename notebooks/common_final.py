@@ -843,46 +843,48 @@ def split_by_gpu(items, gpu_counts):
     return out
 
 
-def run_training_jobs(jobs, gpus, prefetch_task=None, prefetch=True):
+def run_training_jobs(jobs, gpus, prefetch_task=None, prefetch=True, quiet=False):
     """명시적 (tag,seed,task) 잡 리스트를 주어진 로컬 GPU 로 학습(resume/skip/청크 자동).
 
-    run_training 과 동일 로직이지만 tags×seeds 대신 **잡을 직접** 받는다(멀티노드 분할용).
-    gpus=[0,1] → 이 노드에서 보이는 GPU. prefetch=True → 병렬 전에 데이터셋 한 번 받아둠(레이스 방지).
+    quiet=True → 셀 출력 최소(성공 무출력, 실패만 한 줄). 상세는 outputs/final/_logs/train__*.log.
     """
     jobs = list(jobs)
     gpus = list(gpus)
     _check_gpus(gpus)
+    _p = (lambda *a: None) if quiet else print
     if prefetch and jobs:
         pt = prefetch_task or jobs[0][2]
-        if not prefetch_dataset(pt):
+        import io as _io, contextlib as _ctx
+        with (_ctx.redirect_stdout(_io.StringIO()) if quiet else _ctx.nullcontext()):
+            ok = prefetch_dataset(pt)
+        if not ok:
             raise RuntimeError("데이터셋 prefetch 실패 → 병렬 학습을 띄우면 전부 죽는다. 위 로그 확인.")
     n = len(gpus)
-    print(f"학습 {len(jobs)}잡  (GPU {gpus}, {STEPS:,} step, lr 고정)")
+    _p(f"학습 {len(jobs)}잡  (GPU {gpus}, {STEPS:,} step, lr 고정)")
     for i in range(0, len(jobs), n):
         chunk = jobs[i:i + n]
-        print(f"\n===== 청크 {i // n + 1}/{-(-len(jobs) // n)} ({len(chunk)}잡) =====")
+        _p(f"\n===== 청크 {i // n + 1}/{-(-len(jobs) // n)} ({len(chunk)}잡) =====")
         labeled = []
         for g, (tag, seed, tk) in zip(gpus, chunk):
             out = v23.train_dir(tag, seed, tk)
             done = v23.last_ckpt_step(out)
             if done is not None and done >= CKPT_STEP:
-                print(f"  [skip] {v23.run_label(tag, seed, tk)} — 이미 {done:,} 완료")
+                _p(f"  [skip] {v23.run_label(tag, seed, tk)} — 이미 {done:,} 완료")
                 continue
             v23.clean_if_no_ckpt(out)
             mode = f"resume @{done:,}" if done else "새로 시작"
-            print(f"   GPU{g}  {v23.run_label(tag, seed, tk):<28} {mode}")
+            _p(f"   GPU{g}  {v23.run_label(tag, seed, tk):<28} {mode}")
             labeled.append((v23.run_label(tag, seed, tk), make_train_cmd(tag, seed, tk, g)))
         if labeled:
-            v23.launch_cmds_live(labeled, log_tag="train")
-    print("\n학습 완료:", len(jobs), "잡")
+            v23.launch_cmds_live(labeled, log_tag="train", quiet=quiet)
+    _p("\n학습 완료: " + str(len(jobs)) + "잡")
     return jobs
 
 
-def run_libero_eval_jobs(pairs, gpus, task=None, n_episodes=None, reps=None, step=None, n_videos=0):
+def run_libero_eval_jobs(pairs, gpus, task=None, n_episodes=None, reps=None, step=None, n_videos=0, quiet=False):
     """명시적 (tag,seed) 쌍을 LIBERO eval (150k 체크포인트, 기본 500ep, 이미 끝난 run 은 skip).
 
-    repeat_eval_cmd 재사용 → action(.pt) 기록(jerk 측정) + env seed 를 rep 마다 바꿈.
-    reps=[0] (기본) 이면 rep 없이 1회. 결과 = eval_clean_dir → 09_report_sr 가 자동 pooled.
+    quiet=True → 셀 출력 최소(성공 무출력, 실패만 한 줄). 상세는 outputs/final/_logs/job__*.log.
     """
     pairs = list(pairs)
     gpus = list(gpus)
@@ -891,10 +893,11 @@ def run_libero_eval_jobs(pairs, gpus, task=None, n_episodes=None, reps=None, ste
     n = n_episodes or EVAL_N_EP
     reps = [0] if reps is None else list(reps)
     step = CKPT_STEP if step is None else int(step)
+    _p = (lambda *a: None) if quiet else print
     runs = [(t, s, r) for (t, s) in pairs for r in reps]
     todo = [x for x in runs if rep_sr(x[0], x[1], task, x[2], step) is None]
-    print(f"LIBERO eval {len(pairs)}쌍 × {len(reps)}rep × {n}ep | {step:,} ckpt | GPU {gpus}")
-    print(f"  전체 {len(runs)} run / 남은 {len(todo)} (완료 {len(runs) - len(todo)})")
+    _p(f"LIBERO eval {len(pairs)}쌍 × {len(reps)}rep × {n}ep | {step:,} ckpt | GPU {gpus}")
+    _p(f"  전체 {len(runs)} run / 남은 {len(todo)} (완료 {len(runs) - len(todo)})")
     ng = len(gpus)
     for i in range(0, len(todo), ng):
         chunk = todo[i:i + ng]
@@ -905,11 +908,11 @@ def run_libero_eval_jobs(pairs, gpus, task=None, n_episodes=None, reps=None, ste
                                 repeat_eval_cmd(t, s, r, task=task, gpu_id=g,
                                                 n_episodes=n, step=step, n_videos=n_videos)))
             except FileNotFoundError as e:
-                print("  skip:", e)
+                _p("  skip:", e)
         if labeled:
-            print(f"\n===== eval 청크 {i // ng + 1}/{-(-len(todo) // ng)} ({len(labeled)} run) =====")
-            v23.launch_cmds_live(labeled)
-    print("\nLIBERO eval 완료:", len(pairs), "쌍")
+            _p(f"\n===== eval 청크 {i // ng + 1}/{-(-len(todo) // ng)} ({len(labeled)} run) =====")
+            v23.launch_cmds_live(labeled, quiet=quiet)
+    _p("\nLIBERO eval 완료: " + str(len(pairs)) + "쌍")
 
 
 # ── 유닛(모델,seed) = 학습(필요시)→곧바로 eval 를 한 세트로 ──────────────────────
