@@ -73,7 +73,7 @@ notebooks/
 | 노트북 | 언제 | 내용 |
 |---|---|---|
 | `eval_progress` | eval **도는 중** | 진행률 격자(완료/진행중/대기, done N/16) + 지금까지 SR·떨림 + PNG + zip |
-| `eval_final` | seed 다 끝난 뒤 | ① **학습/eval 상태 판단**(학습필요/재eval필요/준비됨) → ② 500ep만 SR 표 + **떨림 표(aloha 동일 계산식)** + 표 이미지 + zip. 표기 `bimamba_s7→ours`, `s7→mosaic`. 궤적 수 적은 seed(옛 50ep 잔재) 자동 제외(`MIN_TRAJ`) |
+| `eval_final` | seed 다 끝난 뒤 | ① **학습/eval 상태 판단** → ② SR 표 + **떨림 표(aloha 동일 계산식)** + 표 이미지 + zip. **유효 500ep = overall n_ep≥2500(=5000)만 채택**(옛 50ep=overall 500·미완은 제외), **미학습/미완은 빈칸**. 표기 `bimamba_s7→ours`, `s7→mosaic` |
 | `retrain` | 덜 학습된 것 정리 | 목표 150k **미달 체크포인트 제거 + 재학습**(+미학습분). folder→config 매핑(`bimamba_s7→bimamba_mosaic`, `mosaic→mosaic_infer`). done(≥150k)은 손 안 댐. GPU 4+4 분할 |
 | `recover_eval` | eval_info 누락 분석 | action 은 있는데 `eval_info.json` 이 안 남은 것 찾기 → `_logs/` 의 `Aggregated Metrics for overall` 에서 **SR 복구** → (선택) eval_info.json 복원. ⚠️ LIBERO overall n_ep = per-task × 10 |
 
