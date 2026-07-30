@@ -67,7 +67,7 @@ eval = **150k ckpt × 500ep**(=overall 5000, 10 task×500) + action(.pt)→떨�
 |---|---|---|
 | `eval_progress` | eval **도는 중** | 진행률 격자(완료/진행중/대기, done N/16) + 지금까지 SR·떨림 + PNG + zip |
 | `eval_final` | seed 다 끝난 뒤 | ① **학습/eval 상태 판단** → ② SR 표 + **떨림 표(aloha 동일 계산식)** + 표 이미지 + zip. **유효 500ep = overall n_ep≥2500(=5000)만 채택**(옛 50ep=overall 500·미완은 제외), **미학습/미완은 빈칸**. 표기 `bimamba_s7→ours`, `s7→mosaic` |
-| `retrain_and_eval_node1~5` | 재학습+재eval 통합 | 상태 분류 → ① stale 제거(under-trained ckpt·무효 eval_info) → ② **재학습**(<150k·미학습) → ③ **재eval**(유효 500ep 없는 것, ~40h/개). folder→config 매핑(`bimamba_s7→bimamba_mosaic`, `mosaic→mosaic_infer`). done·유효 eval 은 안 건드림. **노드 5대 전용 노트북 5개**(node1~5) |
+| `retrain_and_eval_node1~5` | 재학습+재eval 통합 | 상태 분류 → ① stale 제거(under-trained ckpt·무효 eval_info) → ② **재학습**(<150k·미학습) → 유닛(모델,seed) 단위로 학습+eval 한 세트(노드 간 대기 없음), **seed2 우선 라운드로빈**(신규 모델 seed2 가장 먼저 완성). folder→config 매핑(`bimamba_s7→bimamba_mosaic`, `mosaic→mosaic_infer`). done·유효 eval 은 안 건드림. **노드 5대 전용 노트북 5개**(node1~5) |
 | `recover_eval` | eval_info 누락 분석 | action 은 있는데 `eval_info.json` 이 안 남은 것 찾기 → `_logs/` 의 `Aggregated Metrics for overall` 에서 **SR 복구** → (선택) eval_info.json 복원. ⚠️ LIBERO overall n_ep = per-task × 10 |
 
 > 떨림은 `smooth_metrics_paper.py`(팀원 aloha 스크립트와 **동일 계산식**: forward 3차차분 jerk, 경계/내부 RMS, speed-profile SPARC, ldj_cost, sign-flip rate)로 계산 → aloha 숫자와 직접 비교 가능. libero 는 `fs=30`, 경계 stride=100.
