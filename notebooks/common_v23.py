@@ -458,6 +458,7 @@ def make_train_cmd(tag, seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
         parts.append("--use_chunk_pairs=true")
     if str(task).startswith("libero"):        # LIBERO 는 동시 env = batch × 10 → 작게
         parts.append(f"--eval.batch_size={LIBERO_EVAL_BATCH}")
+        parts.append("--num_workers=2")       # 한 노드서 학습 2개 동시 → /dev/shm·프로세스 절약(shm 부족 방지)
     parts.extend(extra)
     return " ".join(parts)
 
