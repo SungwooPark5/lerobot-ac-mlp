@@ -10,7 +10,7 @@ notebooks/
   00_smoke.ipynb                    preflight — 여기부터
   insertion/   메인(긴 horizon)    01~08  학습/eval (ours·acm·baseline·ablation)
   transfer/    짧은 앵커            12~17 (GPU 2장씩 a/b) · 19a/19b(4-GPU 한번에) · 0e/0r/0s
-  libero/      보조(LIBERO-10)      eval_node1_4gpu · eval_node2_4gpu  ← 학습된 4모델 eval (GPU 4+4)
+  libero/      보조(LIBERO-10)      eval_node1_4gpu · eval_node2_4gpu (GPU 4+4) · eval_progress(중간) · eval_final(500ep 확정)
   reports/     표·그림              09_sr · 10_jerk · 11_efficiency · 18_horizon
   utils/       유틸                 0l_collect_libero · 0m_rename_s7_to_mosaic · 0v_record_videos
 ```
@@ -67,6 +67,13 @@ notebooks/
 - eval = **150k ckpt × 500ep** + action(.pt)→떨림(jerk/LDJ/SPARC/SignFlip). **LIBERO 시뮬 필요**.
 - 체크포인트 없거나 이미 끝난 eval 은 자동 skip → 재실행 안전. 결과는 `eval_clean/libero_10/…` 에 모여 리포트 자동 pooled.
 - `bimamba_s7` 은 rename 전 폴더명 그대로 사용(노트북이 태그를 자동 등록). 나중에 `utils/0m` 돌리면 mosaic 으로 통일.
+
+**결과 정리(읽기 전용, 팀 공유용 zip):**
+
+| 노트북 | 언제 | 내용 |
+|---|---|---|
+| `eval_progress` | eval **도는 중** | 진행률 격자(완료/진행중/대기, done N/16) + 지금까지 SR·떨림 + PNG + zip |
+| `eval_final` | seed 다 끝난 뒤 | **500ep 도달 run 만** 채택(미만 자동 제외) → SR 표(mean±std, pooled 95% CI) + 떨림 표 + 최종 표 PNG + zip |
 
 ## `utils/`
 
