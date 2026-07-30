@@ -73,7 +73,9 @@ notebooks/
 | 노트북 | 언제 | 내용 |
 |---|---|---|
 | `eval_progress` | eval **도는 중** | 진행률 격자(완료/진행중/대기, done N/16) + 지금까지 SR·떨림 + PNG + zip |
-| `eval_final` | seed 다 끝난 뒤 | **500ep 도달 run 만** 채택(미만 자동 제외) → SR 표(mean±std, pooled 95% CI) + 떨림 표 + 최종 표 PNG + zip |
+| `eval_final` | seed 다 끝난 뒤 | ① **학습/eval 상태 판단**(학습필요/재eval필요/준비됨) → ② 500ep만 SR 표 + **떨림 표(aloha 동일 계산식)** + 최종 PNG + zip. 표기 `bimamba_s7→ours`, `s7→mosaic` |
+
+> 떨림은 `smooth_metrics_paper.py`(팀원 aloha 스크립트와 **동일 계산식**: forward 3차차분 jerk, 경계/내부 RMS, speed-profile SPARC, ldj_cost, sign-flip rate)로 계산 → aloha 숫자와 직접 비교 가능. libero 는 `fs=30`, 경계 stride=100.
 
 ## `utils/`
 
