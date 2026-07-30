@@ -971,17 +971,20 @@ def run_libero_units(units, gpus, task=None, n_episodes=None):
     task = task or SUPPORT_SIM
     n = n_episodes or EVAL_N_EP
     todo = [(t, s) for (t, s) in units if not unit_done(t, s, task)]
-    print(f"유닛 {len(todo)}개 (학습→eval) | GPU {gpus} | 이미 완료 {len(units) - len(todo)} skip")
     if not todo:
+        print("모두 완료 — 실행할 유닛 없음.")
         return
-    prefetch_dataset(task)
+    import io as _io
+    import contextlib as _ctx
+    with _ctx.redirect_stdout(_io.StringIO()):          # prefetch 출력 억제
+        prefetch_dataset(task)
+    print(f"{len(todo)}개 유닛 실행 (학습→eval). 진행/로그는 outputs/final/_logs/ 에.")  # 셀엔 거의 출력 X
     ng = len(gpus)
     for i in range(0, len(todo), ng):
         chunk = todo[i:i + ng]
         labeled = [(f"{t}/seed{s}", libero_unit_cmd(t, s, g, task, n)) for g, (t, s) in zip(gpus, chunk)]
-        print(f"\n===== 유닛 {i + 1}~{i + len(chunk)}/{len(todo)}: {chunk} (학습→eval) =====")
-        v23.launch_cmds_live(labeled)
-    print("\n유닛 실행 완료:", len(todo))
+        v23.launch_cmds_live(labeled, quiet=True)       # 성공 무출력, 실패만 한 줄
+    print("완료:", len(todo), "유닛")
 
 
 def check_tags():

@@ -534,7 +534,12 @@ def mosaic_sweep_jerk(seed=PRIMARY_SEED, task=PRIMARY_TASK, tag="mosaic_base"):
 
 
 # ── Launcher (EGL) ────────────────────────────────────────────────────────────
-def launch_cmds_live(labeled_cmds, log_tag="job"):
+def launch_cmds_live(labeled_cmds, log_tag="job", quiet=False):
+    """labeled_cmds 를 병렬 실행(각자 _logs/ 로 리다이렉트).
+
+    quiet=True: 출력 셀에 거의 안 찍는다 — 라벨/로그 경로/병렬수 출력 생략, **실패한 것만** 한 줄.
+    (모든 stdout/stderr 은 항상 _logs/ 파일로 감. quiet 은 셀 출력만 줄임.)
+    """
     try:
         from IPython import get_ipython
         ip = get_ipython()
@@ -547,12 +552,19 @@ def launch_cmds_live(labeled_cmds, log_tag="job"):
     for label, cmd in labeled_cmds:
         safe = label.replace("/", "__")
         log_path = log_dir / f"{log_tag}__{safe}.log"
-        print(f"[{label}]  (log: {log_path})")
-        parts.append(f"({env_prefix} {cmd} >> {log_path} 2>&1 && echo '[{label}] 완료 ✅' || echo '[{label}] 실패 ❌')")
+        if quiet:
+            # 성공은 무출력, 실패만 한 줄(로그 경로 포함)
+            parts.append(f"({env_prefix} {cmd} >> {log_path} 2>&1 || echo '[{label}] 실패 ❌ (log: {log_path})')")
+        else:
+            print(f"[{label}]  (log: {log_path})")
+            parts.append(f"({env_prefix} {cmd} >> {log_path} 2>&1 && echo '[{label}] 완료 ✅' || echo '[{label}] 실패 ❌')")
     if not parts:
-        print("실행할 명령 없음."); return
+        if not quiet:
+            print("실행할 명령 없음.")
+        return
     pc = " & ".join(parts) + " & wait"
-    print(f"\n{len(parts)}개 병렬 실행\n")
+    if not quiet:
+        print(f"\n{len(parts)}개 병렬 실행\n")
     (ip.system if ip is not None else lambda c: subprocess.run(c, shell=True, executable="/bin/bash"))(pc)
 
 
