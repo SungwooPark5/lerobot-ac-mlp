@@ -912,6 +912,78 @@ def run_libero_eval_jobs(pairs, gpus, task=None, n_episodes=None, reps=None, ste
     print("\nLIBERO eval 완료:", len(pairs), "쌍")
 
 
+# ── 유닛(모델,seed) = 학습(필요시)→곧바로 eval 를 한 세트로 ──────────────────────
+#   "학습 2개 하면 그 2개를 바로 eval" → 결과가 청크마다 빨리 나온다. 이미 학습된 유닛은 eval 만.
+def libero_unit_cmd(tag, seed, gpu, task=None, n_episodes=None):
+    """한 유닛의 커맨드: 체크포인트<150k 면 학습(→150k) 후 `&&` 로 eval 이어붙임. 이미 학습됐으면 eval 만.
+
+    학습이 방금 끝난 경우에도 되게 eval 은 checkpoints/last 를 가리킨다. ⚠️ `&&` 뒤 eval 에는
+    launch_cmds_live 의 앞쪽 렌더 prefix 가 안 붙으므로 여기서 _render_prefix() 를 다시 넣는다(EGL).
+    """
+    task = task or SUPPORT_SIM
+    n = n_episodes or EVAL_N_EP
+    out_train = v23.train_dir(tag, seed, task)
+    step = v23.last_ckpt_step(out_train)
+    need_train = step is None or step < CKPT_STEP
+    out = eval_rep_dir(tag, seed, task, 0, CKPT_STEP)
+    out.mkdir(parents=True, exist_ok=True)
+    _ds, env_type, env_task = v23.TASKS[task]
+    if need_train:
+        ckpt = out_train / "checkpoints" / v23.LAST_CHECKPOINT_LINK / "pretrained_model"
+    else:
+        ckpt = v23._pretrained(v23.best_ckpt_dir(tag, seed, task, how=CKPT_STEP))
+    eval_cmd = " ".join(v23._gpu_env(gpu) + [
+        f"RECORD_DIR={out / 'actions'}",
+        f"{v23.PYTHON} -m lerobot.scripts.lerobot_eval", f"--policy.path={ckpt}",
+        f"--env.type={env_type}", f"--env.task={env_task}",
+        f"--eval.n_episodes={n}", f"--eval.batch_size={LIBERO_EVAL_BATCH}",
+        f"--seed={EVAL_SEED0}", f"--output_dir={out}",
+    ])
+    if need_train:
+        v23.clean_if_no_ckpt(out_train)
+        return f"{make_train_cmd(tag, seed, task, gpu)} && {v23._render_prefix()} {eval_cmd}"
+    return eval_cmd
+
+
+def unit_done(tag, seed, task=None):
+    """유닛 완료 = 150k 학습됨 + 유효 500ep eval(overall n_ep>=5000의 절반) 있음."""
+    task = task or SUPPORT_SIM
+    trained = (v23.last_ckpt_step(v23.train_dir(tag, seed, task)) or 0) >= CKPT_STEP
+    info = eval_rep_dir(tag, seed, task, 0, CKPT_STEP) / "eval_info.json"
+    ne = 0
+    if info.exists():
+        try:
+            ov = json.loads(info.read_text()).get("overall", {})
+            ne = ov.get("n_ep", ov.get("n_episodes")) or 0
+        except Exception:
+            ne = 0
+    return trained and ne >= (10 * EVAL_N_EP // 2)   # 5000의 절반=2500 이상
+
+
+def run_libero_units(units, gpus, task=None, n_episodes=None):
+    """(tag,seed) 유닛들을 GPU 수만큼 청크로 — 각 유닛 = 학습(필요시)→eval 를 한 번에.
+
+    → 학습 2개(=GPU 2개 청크) 하면 그 2개를 곧바로 eval 하고 다음 청크로. 결과가 빨리 나온다.
+    이미 완료(학습+유효 eval)한 유닛은 skip. 순서대로 처리하므로 seed2 를 앞에 두면 seed2 가 먼저.
+    """
+    gpus = list(gpus)
+    _check_gpus(gpus)
+    task = task or SUPPORT_SIM
+    n = n_episodes or EVAL_N_EP
+    todo = [(t, s) for (t, s) in units if not unit_done(t, s, task)]
+    print(f"유닛 {len(todo)}개 (학습→eval) | GPU {gpus} | 이미 완료 {len(units) - len(todo)} skip")
+    if not todo:
+        return
+    prefetch_dataset(task)
+    ng = len(gpus)
+    for i in range(0, len(todo), ng):
+        chunk = todo[i:i + ng]
+        labeled = [(f"{t}/seed{s}", libero_unit_cmd(t, s, g, task, n)) for g, (t, s) in zip(gpus, chunk)]
+        print(f"\n===== 유닛 {i + 1}~{i + len(chunk)}/{len(todo)}: {chunk} (학습→eval) =====")
+        v23.launch_cmds_live(labeled)
+    print("\n유닛 실행 완료:", len(todo))
+
+
 def check_tags():
     """FINAL_TAGS + ABLATION 이 전부 v23.MODEL_CONFIGS 에 있는지 확인 + 요약(정책/lr/K) 출력."""
     tags = FINAL_TAGS + [t for t in ABLATION if t not in FINAL_TAGS]
