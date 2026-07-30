@@ -458,7 +458,10 @@ def make_train_cmd(tag, seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
         parts.append("--use_chunk_pairs=true")
     if str(task).startswith("libero"):        # LIBERO 는 동시 env = batch × 10 → 작게
         parts.append(f"--eval.batch_size={LIBERO_EVAL_BATCH}")
-        parts.append("--num_workers=2")       # 한 노드서 학습 2개 동시 → /dev/shm·프로세스 절약(shm 부족 방지)
+        # ⚠️ 이 클러스터 노드는 /dev/shm 이 없음(SemLock 생성 FileNotFoundError).
+        #    num_workers>0 이면 DataLoader 워커가 세마포어를 만들려다 무조건 죽는다.
+        #    → num_workers=0: 워커 프로세스 없이 메인에서 로딩(느리지만 shm 안 씀 → 안 죽음).
+        parts.append("--num_workers=0")
     parts.extend(extra)
     return " ".join(parts)
 
