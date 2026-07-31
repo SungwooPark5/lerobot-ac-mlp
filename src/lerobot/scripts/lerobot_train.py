@@ -21,16 +21,6 @@ from pprint import pformat
 from typing import Any
 
 import torch
-import torch.multiprocessing as _mp
-
-# DataLoader 워커 간 텐서 공유를 /dev/shm(파일 디스크립터) 대신 파일 시스템으로.
-# → "unable to open shared memory object ... No such file or directory" (dev/shm 부족) 크래시 방지.
-#   여러 학습을 한 노드에서 동시에 + 큰 이미지(360x360)를 쓸 때 /dev/shm 이 꽉 차서 터지던 문제.
-try:
-    _mp.set_sharing_strategy("file_system")
-except Exception:
-    pass
-
 from accelerate import Accelerator
 from termcolor import colored
 from torch.optim import Optimizer

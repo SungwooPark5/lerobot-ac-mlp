@@ -458,10 +458,11 @@ def make_train_cmd(tag, seed=PRIMARY_SEED, task=PRIMARY_TASK, gpu_id=0,
         parts.append("--use_chunk_pairs=true")
     if str(task).startswith("libero"):        # LIBERO 는 동시 env = batch × 10 → 작게
         parts.append(f"--eval.batch_size={LIBERO_EVAL_BATCH}")
-        # ⚠️ 이 클러스터 노드는 /dev/shm 이 없음(SemLock 생성 FileNotFoundError).
-        #    num_workers>0 이면 DataLoader 워커가 세마포어를 만들려다 무조건 죽는다.
-        #    → num_workers=0: 워커 프로세스 없이 메인에서 로딩(느리지만 shm 안 씀 → 안 죽음).
-        parts.append("--num_workers=0")
+    # 기본은 이전 방식 그대로(config num_workers=4). 단, /dev/shm 없는 노드에서만
+    #   export LEROBOT_NUM_WORKERS=0 하면 워커 끄기(shm 크래시 회피). 안 하면 안 붙음.
+    _nw = os.environ.get("LEROBOT_NUM_WORKERS")
+    if _nw is not None:
+        parts.append(f"--num_workers={_nw}")
     parts.extend(extra)
     return " ".join(parts)
 
