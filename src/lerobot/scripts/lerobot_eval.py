@@ -597,6 +597,12 @@ def eval_main(cfg: EvalPipelineConfig):
     with open(Path(cfg.output_dir) / "eval_info.json", "w") as f:
         json.dump(info, f, indent=2)
 
+    # eval 완주 → task 단위 resume 캐시 정리 (다음 실행은 처음부터)
+    _resume = Path(cfg.output_dir) / "_resume"
+    if _resume.is_dir():
+        import shutil
+        shutil.rmtree(_resume, ignore_errors=True)
+
     logging.info("End of eval")
 
 
@@ -740,6 +746,34 @@ def eval_policy_all(
     overall: dict[str, list] = {k: [] for k in ACC_KEYS}
     per_task_infos: list[dict] = []
 
+    # ── task 단위 resume: 끝난 task 결과를 <output_dir>/_resume/ 에 캐시 → 중간에 끊겨도
+    #    다시 돌리면 끝난 task 는 캐시에서 불러와 skip 하고 남은 task 만 평가한다.
+    #    (완주하면 eval_main 이 eval_info.json 쓴 뒤 _resume 를 지운다 → 다음엔 처음부터.)
+    resume_dir = None
+    _rbase = actions_dir or videos_dir
+    if _rbase is not None:
+        resume_dir = _rbase.parent / "_resume"
+        resume_dir.mkdir(parents=True, exist_ok=True)
+
+    def _rload(tg, tid):
+        if resume_dir is None:
+            return None
+        p = resume_dir / f"task_{tg}_{tid}.json"
+        if p.exists():
+            try:
+                return json.loads(p.read_text())
+            except Exception:
+                return None
+        return None
+
+    def _rsave(tg, tid, m):
+        if resume_dir is None:
+            return
+        try:
+            (resume_dir / f"task_{tg}_{tid}.json").write_text(json.dumps(m, default=float))
+        except Exception:
+            pass
+
     # small inline helper to accumulate one task's metrics into accumulators
     def _accumulate_to(group: str, metrics: dict):
         # metrics expected to contain 'sum_rewards', 'max_rewards', 'successes', optionally 'video_paths'
@@ -784,7 +818,13 @@ def eval_policy_all(
         # sequential path (single accumulator path on the main thread)
         # NOTE: keeping a single-threaded accumulator avoids concurrent list appends or locks
         for task_group, task_id, env in tasks:
-            tg, tid, metrics = task_runner(task_group, task_id, env)
+            cached = _rload(task_group, task_id)
+            if cached is not None:
+                tg, tid, metrics = task_group, task_id, cached
+                logging.info(f"[resume] skip task {task_group}/{task_id} (캐시에서 불러옴)")
+            else:
+                tg, tid, metrics = task_runner(task_group, task_id, env)
+                _rsave(tg, tid, metrics)   # 이 task 완료 → 캐시 저장(다음에 끊겨도 skip)
             _accumulate_to(tg, metrics)
             per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
     else:
