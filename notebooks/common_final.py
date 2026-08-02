@@ -883,10 +883,26 @@ def run_libero_eval_jobs(pairs, gpus, task=None, n_episodes=None, reps=None, ste
     n = n_episodes or EVAL_N_EP
     reps = [0] if reps is None else list(reps)
     step = CKPT_STEP if step is None else int(step)
+
+    # ★ 유효한 500ep(overall n_ep>=2500=500×10) eval 이 이미 있으면 skip. 옛 50ep(overall 500)·
+    #   미완(eval_info 없음)은 skip 안 함 → 다시 돌리면 lerobot_eval 이 task 단위로 이어서 함.
+    _min_valid = 10 * EVAL_N_EP // 2
+
+    def _has_valid(t, s, r):
+        info = eval_rep_dir(t, s, task, r, step) / "eval_info.json"
+        if not info.exists():
+            return False
+        try:
+            ov = json.loads(info.read_text()).get("overall", {})
+            ne = ov.get("n_ep", ov.get("n_episodes")) or 0
+        except Exception:
+            return False
+        return ne >= _min_valid
+
     runs = [(t, s, r) for (t, s) in pairs for r in reps]
-    todo = [x for x in runs if rep_sr(x[0], x[1], task, x[2], step) is None]
+    todo = [x for x in runs if not _has_valid(*x)]
     print(f"LIBERO eval {len(pairs)}쌍 × {len(reps)}rep × {n}ep | {step:,} ckpt | GPU {gpus}")
-    print(f"  전체 {len(runs)} run / 남은 {len(todo)} (완료 {len(runs) - len(todo)})")
+    print(f"  전체 {len(runs)} run / 남은 {len(todo)} (유효 500ep 완료 {len(runs) - len(todo)} skip)")
     ng = len(gpus)
     for i in range(0, len(todo), ng):
         chunk = todo[i:i + ng]
