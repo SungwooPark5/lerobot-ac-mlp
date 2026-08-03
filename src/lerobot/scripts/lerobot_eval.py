@@ -346,7 +346,10 @@ def eval_policy(
             postprocessor=postprocessor,
             seeds=list(seeds) if seeds else None,
             return_observations=return_episode_data,
-            render_callback=render_frame if max_episodes_rendered > 0 else None,
+            # 목표 개수(성공영상 등) 다 저장했으면 더는 렌더 안 함(렌더는 무겁다).
+            render_callback=render_frame
+            if (max_episodes_rendered > 0 and n_episodes_rendered < max_episodes_rendered)
+            else None,
         )
 
         # Figure out where in each rollout sequence the first done condition was encountered (results after
@@ -396,15 +399,21 @@ def eval_policy(
 
         # Maybe render video for visualization.
         if max_episodes_rendered > 0 and len(ep_frames) > 0:
+            # RECORD_SUCCESS_ONLY=1 이면 **성공한 에피소드만** 저장(예: task당 성공 영상 1개).
+            _success_only = os.environ.get("RECORD_SUCCESS_ONLY", "0") not in ("0", "", "false", "False")
             batch_stacked_frames = np.stack(ep_frames, axis=1)  # (b, t, *)
-            for stacked_frames, done_index in zip(
-                batch_stacked_frames, done_indices.flatten().tolist(), strict=False
+            _bsucc = batch_successes.tolist()
+            for stacked_frames, done_index, _succ in zip(
+                batch_stacked_frames, done_indices.flatten().tolist(), _bsucc, strict=False
             ):
                 if n_episodes_rendered >= max_episodes_rendered:
                     break
+                if _success_only and not _succ:      # 성공만 저장 모드 → 실패는 건너뜀
+                    continue
 
                 videos_dir.mkdir(parents=True, exist_ok=True)
-                video_path = videos_dir / f"eval_episode_{n_episodes_rendered}.mp4"
+                _tag = "success" if _succ else "fail"
+                video_path = videos_dir / f"eval_episode_{n_episodes_rendered}_{_tag}.mp4"
                 video_paths.append(str(video_path))
                 thread = threading.Thread(
                     target=write_video,
