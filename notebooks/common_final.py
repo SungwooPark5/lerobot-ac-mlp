@@ -203,6 +203,72 @@ def act_te_eval_cmd(seed, task, gpu_id=0, n_episodes=None, select="last"):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 실험1·2 — overlap 재해석 (재학습 X). overlap-add 는 추론 전용(파라미터 0개 추가)이라,
+#   base 체크포인트를 그대로 불러와 policy 클래스만 overlap 계열로 바꾸면 된다. base ckpt 를
+#   복사 + config.json 의 type/sscp_overlap 만 패치해서 out_tag 의 정상 학습 경로에 놓으면
+#   기존 eval 기계(best_ckpt_dir / run_libero_eval_jobs)가 그대로 평가한다.
+#     act_overlap  ← act        (carry 없음; ACT 는 stateless → overlap 만)
+#     acm2_overlap ← acm2       (carry off + overlap  = "overlap without carry" ablation)
+#     acm2_mosaic  ← acm2_carry (carry on  + overlap  = MOSAIC; ≡ mosaic_infer)
+# ══════════════════════════════════════════════════════════════════════════════
+OVERLAP_SOURCE = {"act_overlap": "act", "acm2_overlap": "acm2", "acm2_mosaic": "acm2_carry"}
+
+
+def materialize_overlap_ckpt(out_tag, seed, task, how=None, overlap=None, window="hann"):
+    """out_tag 의 base 체크포인트를 복사 + config.json 패치해 overlap 클래스 ckpt 로 재해석.
+
+    반환: 만들어진 pretrained_model 경로 (base 없으면 None → 호출측이 스킵/경고).
+    재실행 안전(idempotent): 이미 out_tag type + sscp_overlap 이면 그대로 둔다.
+    overlap 정책은 파라미터 0개 추가 subclass → base 가중치를 그대로 load(strict) 하므로 안전.
+    (혹시 키가 어긋나면 eval 이 로드 단계에서 곧바로 에러 → 조용한 오염 없음.)
+    """
+    import json
+    import shutil
+
+    how = CKPT_STEP if how is None else how
+    overlap = v23._OV if overlap is None else int(overlap)
+    base = OVERLAP_SOURCE[out_tag]
+    ptype = v23.MODEL_CONFIGS[out_tag][0]        # overlap 정책 타입 (예: acm2_sscp_literal_smooth_overlap)
+
+    bcd = v23.best_ckpt_dir(base, seed, task, how=how)
+    if bcd is None:
+        return None                              # base 체크포인트 없음
+    src_pm = v23._pretrained(bcd)
+    dst = v23.train_dir(out_tag, seed, task) / "checkpoints" / bcd.name / "pretrained_model"
+
+    if not (dst / "config.json").exists():       # 아직 복사 안 됨 → base 를 복사
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src_pm, dst, dirs_exist_ok=True)
+
+    cfgp = dst / "config.json"                   # config.json 패치 (idempotent)
+    cfg = json.loads(cfgp.read_text())
+    if cfg.get("type") != ptype or "sscp_overlap" not in cfg:
+        cfg["type"] = ptype
+        cfg["sscp_overlap"] = overlap
+        cfg["sscp_overlap_window"] = window
+        cfg["sscp_overlap_train_weight"] = 0.0
+        cfgp.write_text(json.dumps(cfg, indent=2))
+    return dst
+
+
+def prepare_overlap_ckpts(tags, seeds, task):
+    """overlap 태그들(OVERLAP_SOURCE 에 있는 것)을 base 로부터 재해석. [(tag,seed,경로|None)] 반환."""
+    out = []
+    for t in tags:
+        if t not in OVERLAP_SOURCE:
+            continue
+        for s in seeds:
+            pm = materialize_overlap_ckpt(t, s, task)
+            src = OVERLAP_SOURCE[t]
+            if pm is None:
+                print(f"  ⚠️ {t}/seed{s}: base '{src}' 체크포인트 없음 → 생략 (먼저 {src} 확보 필요)")
+            else:
+                print(f"  ✓ {t}/seed{s} ← {src} 재해석: {pm}")
+            out.append((t, s, pm))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 반복 eval — 150k 체크포인트 1개를 EVAL_REPEATS 회 재평가 (rep 마다 env seed 변경)
 #   · 외란 X (run_perturb 아님). 표준 lerobot_eval 직접 호출.
 #   · rep 은 **학습 seed 와 다른 축**: 학습 seed = 모델 분산 / rep = 평가(env) 분산.
