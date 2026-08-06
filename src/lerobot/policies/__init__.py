@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .act.configuration_act import ACTConfig as ACTConfig
+from .act_overlap.configuration_act_overlap import ACTOverlapConfig as ACTOverlapConfig
 from .acm.configuration_acm import ACMConfig as ACMConfig
 from .acm_sscp_literal.configuration_acm_sscp_literal import ACMSSCPLiteralConfig as ACMSSCPLiteralConfig
 from .acm_sscp_literal_bimamba.configuration_acm_sscp_literal_bimamba import (
@@ -62,6 +63,7 @@ from .xvla.configuration_xvla import XVLAConfig as XVLAConfig
 
 __all__ = [
     "ACTConfig",
+    "ACTOverlapConfig",
     "ACMConfig",
     "ACMSSCPLiteralConfig",
     "ACMSSCPLiteralBiMambaConfig",

@@ -30,6 +30,7 @@ from lerobot.datasets.utils import dataset_to_policy_features
 from lerobot.envs.configs import EnvConfig
 from lerobot.envs.utils import env_to_policy_features
 from lerobot.policies.act.configuration_act import ACTConfig
+from lerobot.policies.act_overlap.configuration_act_overlap import ACTOverlapConfig
 from lerobot.policies.acm_sscp_literal.configuration_acm_sscp_literal import ACMSSCPLiteralConfig
 from lerobot.policies.acm_sscp_literal_bimamba.configuration_acm_sscp_literal_bimamba import (
     ACMSSCPLiteralBiMambaConfig,
@@ -116,6 +117,10 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.act.modeling_act import ACTPolicy
 
         return ACTPolicy
+    elif name == "act_overlap":
+        from lerobot.policies.act_overlap.modeling_act_overlap import ACTOverlapPolicy
+
+        return ACTOverlapPolicy
     elif name == "acm_sscp_literal":
         from lerobot.policies.acm_sscp_literal.modeling_acm_sscp_literal import ACMSSCPLiteralPolicy
 
@@ -254,6 +259,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return DiffusionConfig(**kwargs)
     elif policy_type == "act":
         return ACTConfig(**kwargs)
+    elif policy_type == "act_overlap":
+        return ACTOverlapConfig(**kwargs)
     elif policy_type == "acm_sscp_literal":
         return ACMSSCPLiteralConfig(**kwargs)
     elif policy_type == "acm_sscp_literal_bimamba":

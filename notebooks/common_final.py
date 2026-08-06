@@ -105,6 +105,14 @@ v23.MODEL_CONFIGS["act_te"] = ("act", v23.LR, 100, ["--policy.temporal_ensemble_
 v23.MODEL_DIR_NAMES["act_te"] = "act_te"
 v23.MODEL_LABELS["act_te"] = "ACT+TE (temporal ensemble)"
 
+# bimamba_te = BiMamba + temporal ensembling. act_te 와 같은 원리(추론 전용 TE) — bimamba ckpt 재사용.
+#   실험1 대조군: "우리 overlap(MOSAIC) vs 기존 smoothing(TE)" 를 BiMamba 백본에서도 비교.
+#   *_te 태그는 아래 eval 로직이 자동으로 src=tag[:-3] 체크포인트 + TE_FLAGS 로 처리.
+v23.MODEL_CONFIGS["bimamba_te"] = ("acm2_sscp_literal_bimamba", v23.LR, 100,
+                                   ["--policy.temporal_ensemble_coeff=0.01"], False)
+v23.MODEL_DIR_NAMES["bimamba_te"] = "bimamba_te"
+v23.MODEL_LABELS["bimamba_te"] = "BiMamba+TE (temporal ensemble)"
+
 # 메인 표 = baseline 5 + ours
 BASELINE_TAGS = ["act", "act_te", "diffusion", "smolvla", "acm2", "acm"]
 OURS = "ours"                                  # acm + carry + BiMamba + MOSAIC
@@ -226,8 +234,8 @@ def repeat_eval_cmd(tag, seed, rep, task=None, gpu_id=0, n_episodes=None, step=N
     task = task or MAIN_SIM
     step = CKPT_STEP if step is None else step
     n = n_episodes or EVAL_N_EP
-    is_te = tag == "act_te"
-    src = "act" if is_te else tag                      # ckpt 를 가져올 학습 태그
+    is_te = tag.endswith("_te")                        # act_te, bimamba_te, …
+    src = tag[:-3] if is_te else tag                   # ckpt 를 가져올 학습 태그(TE 는 재학습 X)
 
     cd = v23.best_ckpt_dir(src, seed, task, how=step)  # int → 그 step (없으면 최근접)
     if cd is None:
@@ -266,7 +274,7 @@ def record_videos_cmd(tag, seed, task=None, gpu_id=0, n_videos=5, n_episodes=Non
     task = task or MAIN_SIM
     step = CKPT_STEP if step is None else step
     n = n_episodes or n_videos           # 영상 개수만큼만 돌리면 충분
-    src = "act" if tag == "act_te" else tag
+    src = tag[:-3] if tag.endswith("_te") else tag
     cd = v23.best_ckpt_dir(src, seed, task, how=step)
     if cd is None:
         raise FileNotFoundError(f"No {step:,} checkpoint for {src}/{task}/seed{seed}")
@@ -284,7 +292,7 @@ def record_videos_cmd(tag, seed, task=None, gpu_id=0, n_videos=5, n_episodes=Non
         f"--eval.n_episodes={n}", f"--eval.batch_size={batch}",
         f"--seed={EVAL_SEED0}", f"--output_dir={out}",
     ]
-    if tag == "act_te":
+    if tag.endswith("_te"):
         parts.extend(TE_FLAGS)
     return " ".join(parts)
 

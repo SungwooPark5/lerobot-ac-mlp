@@ -117,6 +117,8 @@ _OV = 10   # overlap steps (K=100 → hop=90)
 MODEL_CONFIGS: dict[str, tuple[str, float, int, list[str], bool]] = {
     # ── baselines ──
     "act":  ("act",              LR,   100, [],           False),  # Transformer decoder reference
+    # 실험1: ACT + MOSAIC = overlap-add만 (ACT엔 carry 없음 → state는 못 함). inference-only.
+    "act_overlap": ("act_overlap", LR,  100, [_OVL(_OV), _OVLW("hann")], False),
     "acm2": ("acm2_sscp_literal", LR,  100, [_CARRY_OFF], False),  # carry-off control (= literal minus carry)
     # ── 외부 정책 baselines (2026-07-12 추가; 각자 원 논문 lr=1e-4 유지) ──
     # diffusion: chunk_size 없음 → horizon(=K) 사용. horizon % 8 == 0 필수(UNet downsample).
@@ -161,6 +163,7 @@ MODEL_CONFIGS: dict[str, tuple[str, float, int, list[str], bool]] = {
 
 MODEL_LABELS = {
     "act":  "ACT (Transformer dec, baseline)",
+    "act_overlap": "ACT + MOSAIC (overlap-add, no carry)",
     "acm2": "acm2 (no carry, baseline)",
     "mosaic_infer": "mosaic overlap (infer only)",
     "mosaic_train": "mosaic overlap (trained) ⭐",
