@@ -203,69 +203,99 @@ def act_te_eval_cmd(seed, task, gpu_id=0, n_episodes=None, select="last"):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 실험1·2 — overlap 재해석 (재학습 X). overlap-add 는 추론 전용(파라미터 0개 추가)이라,
-#   base 체크포인트를 그대로 불러와 policy 클래스만 overlap 계열로 바꾸면 된다. base ckpt 를
+# 실험1·2 — overlap 재해석 (재학습 0회). overlap-add 는 추론 전용(파라미터 0개 추가)이라,
+#   기존 체크포인트를 그대로 불러와 policy 클래스만 overlap 계열로 바꾸면 된다. 소스 ckpt 를
 #   복사 + config.json 의 type/sscp_overlap 만 패치해서 out_tag 의 정상 학습 경로에 놓으면
 #   기존 eval 기계(best_ckpt_dir / run_libero_eval_jobs)가 그대로 평가한다.
-#     act_overlap  ← act        (carry 없음; ACT 는 stateless → overlap 만)
-#     acm2_overlap ← acm2       (carry off + overlap  = "overlap without carry" ablation)
-#     acm2_mosaic  ← acm2_carry (carry on  + overlap  = MOSAIC; ≡ mosaic_infer)
+#
+#   ★ carry-trained ACM2 는 가중치가 동일하다: mosaic_infer 는 (carry ON, overlap_train_weight=0)
+#     으로 학습됐고 overlap 은 파라미터를 안 늘리므로, acm2_carry(순수 carry)와 acm2_mosaic(MOSAIC)는
+#     같은 학습 가중치를 overlap 0 / 10 으로만 다르게 평가하면 된다 → 학습 0회 + 두 조건 seed 분산 제거.
+#
+#   REINTERP: out_tag -> (소스 후보 태그[우선순위], 대상 policy.type, overlap 스텝)
+#     act_overlap  ← act                          (ACT+overlap, carry 없음)                type act_overlap
+#     acm2_overlap ← acm2                          (overlap only, carry off)               overlap 10
+#     acm2_carry   ← mosaic_infer|acm2_carry|…     (carry only,   overlap 0)               overlap 0
+#     acm2_mosaic  ← mosaic_infer|acm2_carry|…     (carry+overlap = MOSAIC)                overlap 10
 # ══════════════════════════════════════════════════════════════════════════════
-OVERLAP_SOURCE = {"act_overlap": "act", "acm2_overlap": "acm2", "acm2_mosaic": "acm2_carry"}
+_OVL_TYPE = "acm2_sscp_literal_smooth_overlap"
+# carry 로 학습된 ACM2 후보(가중치 동일). 먼저 존재하는 것을 소스로 씀.
+CARRY_ACM2 = ["mosaic_infer", "acm2_carry", "literal", "mosaic_base"]
+REINTERP = {
+    "act_overlap":  (["act"],     "act_overlap", 10),
+    "acm2_overlap": (["acm2"],    _OVL_TYPE,     10),
+    "acm2_carry":   (CARRY_ACM2,  _OVL_TYPE,      0),
+    "acm2_mosaic":  (CARRY_ACM2,  _OVL_TYPE,     10),
+}
+# 하위호환(첫 후보만)
+OVERLAP_SOURCE = {k: v[0][0] for k, v in REINTERP.items()}
 
 
-def materialize_overlap_ckpt(out_tag, seed, task, how=None, overlap=None, window="hann"):
-    """out_tag 의 base 체크포인트를 복사 + config.json 패치해 overlap 클래스 ckpt 로 재해석.
+def _first_source(cands, seed, task, how):
+    """후보 태그 중 how(=step) 체크포인트가 존재하는 첫 번째를 (태그, ckpt_dir) 로 반환. 없으면 (None, None)."""
+    for src in cands:
+        cd = v23.best_ckpt_dir(src, seed, task, how=how)
+        if cd is not None:
+            return src, cd
+    return None, None
 
-    반환: 만들어진 pretrained_model 경로 (base 없으면 None → 호출측이 스킵/경고).
-    재실행 안전(idempotent): 이미 out_tag type + sscp_overlap 이면 그대로 둔다.
-    overlap 정책은 파라미터 0개 추가 subclass → base 가중치를 그대로 load(strict) 하므로 안전.
-    (혹시 키가 어긋나면 eval 이 로드 단계에서 곧바로 에러 → 조용한 오염 없음.)
+
+def materialize_overlap_ckpt(out_tag, seed, task, how=None, window="hann"):
+    """out_tag 의 소스 후보 중 존재하는 첫 ckpt 를 복사 + config.json 패치해 재해석. (경로, 소스태그) 반환.
+
+    소스 없으면 (None, None). idempotent(재실행 안전). 재학습 0회.
+    overlap 정책은 파라미터 0개 추가 subclass → 소스 가중치를 그대로 strict-load. 키 어긋나면
+    eval 로드 단계에서 즉시 에러(조용한 오염 없음). 소스==out_tag 이면 그대로 씀(복사·패치 안 함).
     """
     import json
     import shutil
 
     how = CKPT_STEP if how is None else how
-    overlap = v23._OV if overlap is None else int(overlap)
-    base = OVERLAP_SOURCE[out_tag]
-    ptype = v23.MODEL_CONFIGS[out_tag][0]        # overlap 정책 타입 (예: acm2_sscp_literal_smooth_overlap)
-
-    bcd = v23.best_ckpt_dir(base, seed, task, how=how)
+    cands, ptype, overlap = REINTERP[out_tag]
+    src, bcd = _first_source(cands, seed, task, how)
     if bcd is None:
-        return None                              # base 체크포인트 없음
+        return None, None
     src_pm = v23._pretrained(bcd)
-    dst = v23.train_dir(out_tag, seed, task) / "checkpoints" / bcd.name / "pretrained_model"
+    if src == out_tag:                           # 네이티브 ckpt 그대로 (재해석 불필요)
+        return src_pm, src
 
-    if not (dst / "config.json").exists():       # 아직 복사 안 됨 → base 를 복사
+    dst = v23.train_dir(out_tag, seed, task) / "checkpoints" / bcd.name / "pretrained_model"
+    if not (dst / "config.json").exists():       # 아직 복사 안 됨 → 소스 복사
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src_pm, dst, dirs_exist_ok=True)
 
     cfgp = dst / "config.json"                   # config.json 패치 (idempotent)
     cfg = json.loads(cfgp.read_text())
-    if cfg.get("type") != ptype or "sscp_overlap" not in cfg:
+    if cfg.get("type") != ptype or cfg.get("sscp_overlap") != overlap:
         cfg["type"] = ptype
-        cfg["sscp_overlap"] = overlap
+        cfg["sscp_overlap"] = int(overlap)
         cfg["sscp_overlap_window"] = window
         cfg["sscp_overlap_train_weight"] = 0.0
         cfgp.write_text(json.dumps(cfg, indent=2))
-    return dst
+    return dst, src
+
+
+def prepare_overlap_for(pairs, task):
+    """정확히 주어진 (tag,seed) 쌍만 재해석(REINTERP 태그만). 노드별로 자기 몫만 → 경쟁 없음.
+
+    반환: [(tag, seed, 경로|None, 소스|None)]. 소스 없으면 경고 출력.
+    """
+    out = []
+    for t, s in pairs:
+        if t not in REINTERP:
+            continue
+        pm, src = materialize_overlap_ckpt(t, s, task)
+        if pm is None:
+            print(f"  ⚠️ {t}/seed{s}: 소스 {REINTERP[t][0]} 중 존재하는 ckpt 없음 → 생략")
+        else:
+            print(f"  ✓ {t}/seed{s} ← {src} 재해석 (overlap={REINTERP[t][2]})")
+        out.append((t, s, pm, src))
+    return out
 
 
 def prepare_overlap_ckpts(tags, seeds, task):
-    """overlap 태그들(OVERLAP_SOURCE 에 있는 것)을 base 로부터 재해석. [(tag,seed,경로|None)] 반환."""
-    out = []
-    for t in tags:
-        if t not in OVERLAP_SOURCE:
-            continue
-        for s in seeds:
-            pm = materialize_overlap_ckpt(t, s, task)
-            src = OVERLAP_SOURCE[t]
-            if pm is None:
-                print(f"  ⚠️ {t}/seed{s}: base '{src}' 체크포인트 없음 → 생략 (먼저 {src} 확보 필요)")
-            else:
-                print(f"  ✓ {t}/seed{s} ← {src} 재해석: {pm}")
-            out.append((t, s, pm))
-    return out
+    """tags×seeds 전체 재해석(단일 노드용). 노드 분할 시엔 prepare_overlap_for(pairs) 사용."""
+    return prepare_overlap_for([(t, s) for t in tags for s in seeds], task)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
