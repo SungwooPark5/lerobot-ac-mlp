@@ -988,9 +988,9 @@ def run_libero_eval_jobs(pairs, gpus, task=None, n_episodes=None, reps=None, ste
     reps = [0] if reps is None else list(reps)
     step = CKPT_STEP if step is None else int(step)
 
-    # ★ 유효한 500ep(overall n_ep>=2500=500×10) eval 이 이미 있으면 skip. 옛 50ep(overall 500)·
-    #   미완(eval_info 없음)은 skip 안 함 → 다시 돌리면 lerobot_eval 이 task 단위로 이어서 함.
-    _min_valid = 10 * EVAL_N_EP // 2
+    # ★ 유효한 eval(overall n_ep >= n×10÷2) 이 이미 있으면 skip. 임계값은 **실제 n_episodes 기준**
+    #   (100ep → 500, 500ep → 2500). 미완(eval_info 없음/부분)은 skip 안 함 → 다시 돌리면 task 단위로 이어서 함.
+    _min_valid = 10 * n // 2
 
     def _has_valid(t, s, r):
         info = eval_rep_dir(t, s, task, r, step) / "eval_info.json"
