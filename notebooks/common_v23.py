@@ -132,6 +132,12 @@ MODEL_CONFIGS: dict[str, tuple[str, float, int, list[str], bool]] = {
                  [_CARRY_ON, _OVL(_OV), _OVLW("hann"), _OLAW(0.1)], True),           # + overlap-consistency training
     "mosaic_s3":    ("acm2_sscp_literal_smooth_overlap", LR, 100,
                  [_CARRY_ON, _OVL(_OV), _OVLW("hann"), _STATE(0.1)], True),          # overlap infer + S3 state loss
+    # ── 실험2: MOSAIC 구성요소 분리 (ACM2 기준, carry ⊕ overlap). acm2=둘다 off ──
+    "acm2_carry":   ("acm2_sscp_literal", LR, 100, [_CARRY_ON], True),               # carry만 (overlap X)
+    "acm2_overlap": ("acm2_sscp_literal_smooth_overlap", LR, 100,
+                 [_CARRY_OFF, _OVL(_OV), _OVLW("hann")], False),                     # overlap만 (carry X) — 신규
+    "acm2_mosaic":  ("acm2_sscp_literal_smooth_overlap", LR, 100,
+                 [_CARRY_ON, _OVL(_OV), _OVLW("hann")], True),                       # carry+overlap = MOSAIC(=mosaic_infer)
     # ── bimamba family ──
     "bimamba":       ("acm2_sscp_literal_bimamba", LR, 100, [_CARRY_ON], True),      # literal carry + BiMamba
     "bimamba_mosaic":    ("acm2_sscp_literal_smooth_overlap", LR, 100,
