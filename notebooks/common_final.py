@@ -219,13 +219,18 @@ def act_te_eval_cmd(seed, task, gpu_id=0, n_episodes=None, select="last"):
 #     acm2_mosaic  ← mosaic_infer|acm2_carry|…     (carry+overlap = MOSAIC)                overlap 10
 # ══════════════════════════════════════════════════════════════════════════════
 _OVL_TYPE = "acm2_sscp_literal_smooth_overlap"
-# carry 로 학습된 ACM2 후보(가중치 동일). 먼저 존재하는 것을 소스로 씀.
-CARRY_ACM2 = ["mosaic_infer", "acm2_carry", "literal", "mosaic_base"]
+# ★ 서버 실제 학습 폴더는 코드 태그명과 다름(옛 코드네임 유지): mosaic = s7 = ACM2 carry+overlap(no BiMamba),
+#   bimamba_s7 = ours = BiMOS(ACM2 carry+BiMamba+overlap). 소스로 쓰려면 MODEL_DIR_NAMES 에 등록.
+for _f in ("mosaic", "bimamba_s7"):
+    v23.MODEL_DIR_NAMES.setdefault(_f, _f)
+# carry 로 학습된 ACM2 후보(가중치 동일). 먼저 존재하는 것을 소스로. 'mosaic'(서버 실제 폴더) 우선.
+CARRY_ACM2 = ["mosaic", "mosaic_infer", "acm2_carry", "literal", "mosaic_base"]
 REINTERP = {
-    "act_overlap":  (["act"],     "act_overlap", 10),
-    "acm2_overlap": (["acm2"],    _OVL_TYPE,     10),
-    "acm2_carry":   (CARRY_ACM2,  _OVL_TYPE,      0),
-    "acm2_mosaic":  (CARRY_ACM2,  _OVL_TYPE,     10),
+    "act_overlap":    (["act"],                          "act_overlap", 10),  # ACT+overlap (carry 없음)
+    "acm2_overlap":   (["acm2"],                         _OVL_TYPE,     10),  # overlap only (carry off)
+    "acm2_carry":     (CARRY_ACM2,                       _OVL_TYPE,      0),  # carry only (overlap off)
+    "acm2_mosaic":    (CARRY_ACM2,                       _OVL_TYPE,     10),  # carry+overlap = MOSAIC (=mosaic 폴더)
+    "bimamba_mosaic": (["bimamba_s7", "bimamba_mosaic"], _OVL_TYPE,     10),  # BiMOS = 서버 'bimamba_s7' 폴더
 }
 # 하위호환(첫 후보만)
 OVERLAP_SOURCE = {k: v[0][0] for k, v in REINTERP.items()}
