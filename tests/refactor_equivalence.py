@@ -1,6 +1,11 @@
 #!/usr/bin/env python
 """Check that refactoring a flat policy into a subclass changed nothing.
 
+Every optional block is switched ON in WANTED below. A flag left at its default
+would let a variant pass without its distinguishing code ever executing -- the
+forget gate, the MoE mixture and the jerk penalty are all off by default, and all
+three would otherwise have been "verified" untouched.
+
 Workflow for one variant, e.g. acm_bimamba:
 
     cd src/lerobot/policies/acm_bimamba
@@ -111,6 +116,10 @@ WANTED = {
     "use_bimamba_forget_gate": True,
     "use_pre_cross_attention": True,
     "use_moe_decoder_fusion": True,
+    "use_action_self_attention": True,
+    "use_action_conv_refiner": True,
+    "action_accel_weight": 0.5,
+    "action_jerk_weight": 0.5,
     "use_vae": True,
     "vision_backbone": "resnet18",
     "pretrained_backbone_weights": None,
