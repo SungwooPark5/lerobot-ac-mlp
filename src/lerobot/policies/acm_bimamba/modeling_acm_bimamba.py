@@ -96,10 +96,21 @@ class BiMambaWholeFlipDecoder(MambaACMDecoder):
         chunk_size = x.shape[1]
         out = combined_seq[:, -chunk_size:, :]  # (B, T, D)
 
+        out = self._post_scan(out)
+
         if self.norm is not None:
             out = self.norm(out)
 
         return out.transpose(0, 1)
+
+    def _post_scan(self, out: Tensor) -> Tensor:
+        """Hook between slicing the action tokens and the final LayerNorm.
+
+        Identity here. acm_bimamba_gate mixes in a local-conv candidate at this
+        point, which is why it is a hook and not inlined -- the gate has to see
+        the un-normalised scan output, exactly as it did before the refactor.
+        """
+        return out
 
 
 class ACMBiMamba(ACM):

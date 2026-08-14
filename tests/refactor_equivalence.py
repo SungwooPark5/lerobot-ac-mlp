@@ -101,6 +101,7 @@ WANTED = {
     "n_decoder_layers": 1,
     "use_mamba": True,
     "use_bimamba_decoder": True,
+    "use_bimamba_forget_gate": True,
     "use_vae": True,
     "vision_backbone": "resnet18",
     "pretrained_backbone_weights": None,
@@ -124,7 +125,9 @@ def shared_kwargs(*config_classes) -> dict:
 
 
 def make_config(config_cls, kwargs: dict):
-    """Small but structurally faithful: VAE on, one camera, BiMamba where supported."""
+    """Small but structurally faithful: VAE on, one camera, optional blocks on where
+    the config supports them -- a flag left at its default would leave the very code
+    the variant exists for untested."""
     cfg = config_cls(**kwargs)
     cfg.input_features = {
         OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(STATE_DIM,)),
