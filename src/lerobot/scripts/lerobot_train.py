@@ -329,6 +329,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if is_main_process:
         logging.info("Start offline training on a fixed dataset")
 
+    # Optional explicit step lists (irregular checkpoints). Parsed once; None -> use freq logic.
+    _save_steps = {int(s) for s in cfg.save_steps.split(",") if s.strip()} if cfg.save_steps else None
+    _eval_steps = {int(s) for s in cfg.eval_steps.split(",") if s.strip()} if cfg.eval_steps else None
+
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
@@ -350,8 +354,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         step += 1
         train_tracker.step()
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main_process
-        is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
-        is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
+        if _save_steps is not None:
+            is_saving_step = step in _save_steps or step == cfg.steps
+        else:
+            is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
+        if _eval_steps is not None:
+            is_eval_step = cfg.eval_freq > 0 and step in _eval_steps
+        else:
+            is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
 
         if is_log_step:
             logging.info(train_tracker)

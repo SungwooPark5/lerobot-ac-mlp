@@ -22,7 +22,7 @@ while maintaining the selective scan capability.
 
 import math
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable 
 from itertools import chain
 
 import einops
@@ -302,17 +302,7 @@ class ACM2(nn.Module):
 
     def _reset_parameters(self):
         """Xavier-uniform init for transformer params; preserve Mamba2's internal init."""
-        mamba_param_ids = set()
-
-        if getattr(self.decoder, "layers", None) is not None:
-            mamba_param_ids.update(id(p) for p in self.decoder.layers.parameters())
-
-        if getattr(self.decoder, "forward_layers", None) is not None:
-            mamba_param_ids.update(id(p) for p in self.decoder.forward_layers.parameters())
-
-        if getattr(self.decoder, "backward_layers", None) is not None:
-            mamba_param_ids.update(id(p) for p in self.decoder.backward_layers.parameters())
-
+        mamba_param_ids = {id(p) for p in self.decoder.layers.parameters()}
         for p in chain(self.encoder.parameters(), self.decoder.parameters()):
             if p.dim() > 1 and id(p) not in mamba_param_ids:
                 nn.init.xavier_uniform_(p)
@@ -343,10 +333,16 @@ class ACM2(nn.Module):
 
             pos_embed = self.vae_encoder_pos_enc.clone().detach()
 
+            if OBS_ENV_STATE in batch:
+                _ref = batch[OBS_ENV_STATE]
+            elif OBS_STATE in batch:
+                _ref = batch[OBS_STATE]
+            else:
+                _ref = next(v for v in batch.values() if v is not None and hasattr(v, 'device'))
             cls_joint_is_pad = torch.full(
                 (batch_size, 2 if self.config.robot_state_feature else 1),
                 False,
-                device=batch[OBS_STATE].device,
+                device=_ref.device,
             )
             key_padding_mask = torch.cat(
                 [cls_joint_is_pad, batch["action_is_pad"]], axis=1
@@ -471,7 +467,14 @@ class ACTEncoderLayer(nn.Module):
 
 
 class Mamba2ACMDecoder(nn.Module):
-    """Mamba-2 SSD decoder for ACM-2 with optional BiMamba and action self-attention."""
+    """Mamba-2 SSD decoder for ACM-2.
+
+    Uses Mamba2 (State Space Duality) layers instead of Mamba-1's selective scan.
+    Key differences from Mamba-1:
+    - Uses structured state space decomposition (SSD) for O(N) computation
+    - Multi-head structure with configurable head dimension
+    - Typically uses larger d_state (64 vs 16) for better expressiveness
+    """
 
     def __init__(self, config: ACM2Config):
         super().__init__()
@@ -482,122 +485,67 @@ class Mamba2ACMDecoder(nn.Module):
                 "Install with: pip install mamba-ssm>=2.0"
             )
 
-        self.use_bimamba_decoder = getattr(config, "use_bimamba_decoder", False)
-
-        def make_mamba2_layer(layer_idx: int):
-            return Mamba2(
-                d_model=config.dim_model,
-                d_state=config.mamba2_d_state,
-                d_conv=config.mamba2_d_conv,
-                expand=config.mamba2_expand,
-                headdim=config.mamba2_headdim,
-                chunk_size=config.mamba2_chunk_size,
-                layer_idx=layer_idx,
-            )
-
-        if self.use_bimamba_decoder:
-            self.forward_layers = nn.ModuleList(
-                [make_mamba2_layer(i) for i in range(config.n_decoder_layers)]
-            )
-            self.backward_layers = nn.ModuleList(
-                [make_mamba2_layer(i + config.n_decoder_layers) for i in range(config.n_decoder_layers)]
-            )
-            self.layers = None
-        else:
-            self.layers = nn.ModuleList(
-                [make_mamba2_layer(i) for i in range(config.n_decoder_layers)]
-            )
-            self.forward_layers = None
-            self.backward_layers = None
-
-        self.use_action_self_attention = getattr(config, "use_action_self_attention", False)
-        self.action_self_attention_use_gate = getattr(config, "action_self_attention_use_gate", True)
-
-        if self.use_action_self_attention:
-            self.action_self_attn_norm = nn.LayerNorm(config.dim_model)
-
-            self.action_self_attn = nn.MultiheadAttention(
-                config.dim_model,
-                config.n_heads,
-                dropout=config.dropout,
-            )
-            self.action_self_attn_dropout = nn.Dropout(config.dropout)
-
-            gamma_init = getattr(config, "action_self_attention_gamma_init", 1e-4)
-            self.action_self_attn_gamma = nn.Parameter(torch.tensor(float(gamma_init)))
-        else:
-            self.action_self_attn_norm = None
-            self.action_self_attn = None
-            self.action_self_attn_dropout = None
-            self.action_self_attn_gamma = None
-
+        self.layers = nn.ModuleList(
+            [
+                Mamba2(
+                    d_model=config.dim_model,
+                    d_state=config.mamba2_d_state,
+                    d_conv=config.mamba2_d_conv,
+                    expand=config.mamba2_expand,
+                    headdim=config.mamba2_headdim,
+                    chunk_size=config.mamba2_chunk_size,
+                    layer_idx=i,
+                )
+                for i in range(config.n_decoder_layers)
+            ]
+        )
         self.norm = nn.LayerNorm(config.dim_model)
 
     def forward(
         self,
-        x: Tensor,
-        encoder_out: Tensor,
+        x: Tensor,  # Action Queries (Chunk Size, Batch, Dim)
+        encoder_out: Tensor,  # Context (Encoder Seq, Batch, Dim)
         decoder_pos_embed: Tensor | None = None,
         encoder_pos_embed: Tensor | None = None,
     ) -> Tensor:
+        # Add positional embeddings.
         if decoder_pos_embed is not None:
             x = x + decoder_pos_embed
         if encoder_pos_embed is not None:
             encoder_out = encoder_out + encoder_pos_embed
 
-        x = x.transpose(0, 1)                  # (B, T, D)
-        encoder_out = encoder_out.transpose(0, 1)  # (B, E, D)
+        # Transpose to (B, S, D) for Mamba2.
+        x = x.transpose(0, 1)
+        encoder_out = encoder_out.transpose(0, 1)
 
-        combined_seq = torch.cat([encoder_out, x], dim=1)  # (B, E+T, D)
+        # Concatenate encoder context + decoder queries.
+        combined_seq = torch.cat([encoder_out, x], dim=1)
 
-        if self.use_bimamba_decoder:
-            forward_seq = combined_seq
-            for layer in self.forward_layers:
-                forward_seq = layer(forward_seq)
+        # Apply Mamba-2 SSD layers.
+        for layer in self.layers:
+            combined_seq = layer(combined_seq)
 
-            backward_seq = combined_seq.flip([1])
-            for layer in self.backward_layers:
-                backward_seq = layer(backward_seq)
-            backward_seq = backward_seq.flip([1])
-
-            combined_seq = 0.5 * (forward_seq + backward_seq)
-
-            chunk_size = x.shape[1]
-            out = combined_seq[:, -chunk_size:, :]
-
-        else:
-            for layer in self.layers:
-                combined_seq = layer(combined_seq)
-
-            chunk_size = x.shape[1]
-            out = combined_seq[:, -chunk_size:, :]
-
-        if self.use_action_self_attention:
-            out_t = out.transpose(0, 1)  # (T, B, D)
-
-            residual = out_t
-            out_norm = self.action_self_attn_norm(out_t)
-
-            attn_delta = self.action_self_attn(
-                out_norm,
-                out_norm,
-                value=out_norm,
-                need_weights=False,
-            )[0]
-            attn_delta = self.action_self_attn_dropout(attn_delta)
-
-            if self.action_self_attention_use_gate:
-                scale = torch.tanh(self.action_self_attn_gamma)
-                out_t = residual + scale * attn_delta
-            else:
-                out_t = residual + attn_delta
-
-            out = out_t.transpose(0, 1)  # (B, T, D)
+        # Extract the predicted action tokens (last chunk_size tokens).
+        chunk_size = x.shape[1]
+        out = combined_seq[:, -chunk_size:, :]
 
         if self.norm is not None:
             out = self.norm(out)
 
         return out.transpose(0, 1)
+
+
+def create_sinusoidal_pos_embedding(num_positions: int, dimension: int) -> Tensor:
+    """1D sinusoidal positional embeddings as in Attention is All You Need."""
+
+    def get_position_angle_vec(position):
+        return [position / np.power(10000, 2 * (hid_j // 2) / dimension) for hid_j in range(dimension)]
+
+    sinusoid_table = np.array([get_position_angle_vec(pos_i) for pos_i in range(num_positions)])
+    sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])
+    sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])
+    return torch.from_numpy(sinusoid_table).float()
+
 
 class ACTSinusoidalPositionEmbedding2d(nn.Module):
     """2D sinusoidal positional embeddings similar to what's presented in Attention Is All You Need."""
@@ -640,14 +588,3 @@ def get_activation_fn(activation: str) -> Callable:
     if activation == "glu":
         return F.glu
     raise RuntimeError(f"activation should be relu/gelu/glu, not {activation}.")
-
-def create_sinusoidal_pos_embedding(num_positions: int, dimension: int) -> Tensor:
-    """1D sinusoidal positional embeddings as in Attention is All You Need."""
-
-    def get_position_angle_vec(position):
-        return [position / np.power(10000, 2 * (hid_j // 2) / dimension) for hid_j in range(dimension)]
-
-    sinusoid_table = np.array([get_position_angle_vec(pos_i) for pos_i in range(num_positions)])
-    sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])
-    sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])
-    return torch.from_numpy(sinusoid_table).float()

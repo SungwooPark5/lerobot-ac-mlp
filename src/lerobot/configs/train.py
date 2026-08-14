@@ -55,11 +55,17 @@ class TrainPipelineConfig(HubMixin):
     batch_size: int = 8
     steps: int = 100_000
     eval_freq: int = 20_000
+    # Optional explicit step list (comma-separated, e.g. "100000,130000,150000"). When set, eval runs
+    # ONLY at these steps and eval_freq is ignored. Useful for irregular checkpoints.
+    eval_steps: str | None = None
     log_freq: int = 200
     tolerance_s: float = 1e-4
     save_checkpoint: bool = True
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 20_000
+    # Optional explicit step list (comma-separated). When set, checkpoints are saved ONLY at these
+    # steps (plus the final step) and save_freq is ignored.
+    save_steps: str | None = None
     use_policy_training_preset: bool = True
     optimizer: OptimizerConfig | None = None
     scheduler: LRSchedulerConfig | None = None
