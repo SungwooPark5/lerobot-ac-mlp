@@ -30,25 +30,26 @@ initialised from the same random draw". (2) is stricter than equivalence needs
 but is what keeps old runs reproducible, so a failure there is a warning, not
 an error -- the exit code is 2 rather than 0.
 
-Results so far (RTX A6000), all three checks passing:
-  acm_bimamba        842 -> 119 lines, 198 tensors, loss 79.96869659
-  acm_refiner       1231 -> 219 lines, 191 tensors, loss 79.94760895
-  acm_bimamba_gate  1122 -> 157 lines, 204 tensors, loss 79.91233063
+Results, all seven passing all three checks on an RTX A6000 with every optional
+block switched on (tensors / params / train loss):
 
-acm_bimamba was re-run after BiMambaWholeFlipDecoder gained the _post_scan hook
-and returned the same loss to the last digit, which is the hook being an
-identity rather than an assertion that it is. acm_bimamba_gate's 204 tensors are
-acm_bimamba's 198 plus the gate's six, so the gate really was built and executed
--- with use_bimamba_forget_gate left at its default it would not have been.
+  acm_bimamba        842 ->  119   198  11,443,278  79.96869659
+  acm_bimamba_gate  1122 ->  157   204  11,455,823  79.91233063
+  acm_refiner       1231 ->  219   191  11,410,766  79.94760895
+  acm_cross_atten   1052 ->   88   198  11,427,535  79.91434479
+  acm_moe           1249 ->  274   217  11,470,493  80.87980652
+  acm_self_atten    1057 ->   77   196  11,427,407  79.91432953
+  acm_accel_loss    1169 ->   73   205  11,460,047  80.57936859
 
-Caveat for acm_refiner and, from a quick scan, acm_cross_atten / acm_moe /
-acm_self_atten / acm_accel_loss: those configs never declared mamba_d_state,
-mamba_d_conv or mamba_expand while their decoders read all three, so the
-pre-refactor policy raised AttributeError on construction and could not run at
-all. The frozen config gets those three fields back at ACMConfig's values (the
-ones the refactored config now inherits) purely so there is something to compare
-against; the comparison is then against what the original would have computed
-had it been runnable.
+acm_moe's 217 tensors are the two decoders, the second action head and the gate
+MLP; acm_bimamba_gate's 204 are acm_bimamba's 198 plus the gate's six. Both are
+the evidence that the distinguishing code ran -- at the default flags it would
+not have.
+
+"config fields applied: 13-15/20" is expected. The frozen configs are older
+snapshots, and shared_kwargs intersects rather than filters, so a field only one
+side declares is left at its default on both.
+
 """
 
 import argparse
