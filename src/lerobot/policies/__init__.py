@@ -15,30 +15,6 @@
 from .act.configuration_act import ACTConfig as ACTConfig
 from .acm.configuration_acm import ACMConfig as ACMConfig
 from .acm2.configuration_acm2 import ACM2Config as ACM2Config
-from lerobot.policies.acm2_icpe.configuration_acm2_icpe import (
-    ACM2ICPEConfig,
-)
-from lerobot.policies.acm2_icpe.modeling_acm2_icpe import (
-    ACM2ICPEPolicy,
-)
-from lerobot.policies.acm2_icpe_sscp.configuration_acm2_icpe_sscp import (
-    ACM2ICPESSCPConfig,
-)
-from lerobot.policies.acm2_icpe_sscp.modeling_acm2_icpe_sscp import (
-    ACM2ICPESSCPPolicy,
-)
-from lerobot.policies.acm2_bimamba_icpe_sscp.configuration_acm2_bimamba_icpe_sscp import (
-  ACM2BiMambaICPESSCPConfig,                                                                                                           
-)
-from lerobot.policies.acm2_bimamba_icpe_sscp.modeling_acm2_bimamba_icpe_sscp import (                                                    
-  ACM2BiMambaICPESSCPPolicy,                                                                                                           
-)
-from lerobot.policies.acm2_bimamba_action_icpe_sscp.configuration_acm2_bimamba_action_icpe_sscp import (
-    ACM2BiMambaActionICPESSCPConfig,
-)
-from lerobot.policies.acm2_bimamba_action_icpe_sscp.modeling_acm2_bimamba_action_icpe_sscp import (
-    ACM2BiMambaActionICPESSCPPolicy,
-)
 from lerobot.policies.acm2_bimamba_self_atten.configuration_acm2_bimamba_selfatten import (
     ACM2Config as ACM2BiMambaSelfAttenConfig,
 )
@@ -60,14 +36,6 @@ __all__ = [
     "ACTConfig",
     "ACMConfig",
     "ACM2Config",
-    "ACM2ICPEConfig",
-    "ACM2ICPEPolicy",
-    "ACM2ICPESSCPConfig",
-    "ACM2ICPESSCPPolicy",
-    "ACM2BiMambaICPESSCPConfig",                                                                                                         
-    "ACM2BiMambaICPESSCPPolicy",
-    "ACM2BiMambaActionICPESSCPConfig",
-    "ACM2BiMambaActionICPESSCPPolicy",
     "ACM2BiMambaSelfAttenConfig",
     "ACM2BiMambaSelfAttenPolicy",
     "ACM3Config",
