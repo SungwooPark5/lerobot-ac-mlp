@@ -61,12 +61,17 @@ class ACMPolicy(PreTrainedPolicy):
         config.validate_features()
         self.config = config
 
-        self.model = ACM(config)
+        self.model = self._build_model(config)
 
         if config.temporal_ensemble_coeff is not None:
             self.temporal_ensembler = ACTTemporalEnsembler(config.temporal_ensemble_coeff, config.chunk_size)
 
         self.reset()
+
+    def _build_model(self, config: ACMConfig) -> "ACM":
+        """Which network this policy wraps. Subclasses that only swap a submodule
+        override this instead of reimplementing __init__."""
+        return ACM(config)
 
     def get_optim_params(self) -> dict:
         # TODO(aliberts, rcadene): As of now, lr_backbone == lr
@@ -515,7 +520,7 @@ class ACM(nn.Module):
         self.encoder = ACTEncoder(config)
 
         if config.use_mamba:
-            self.decoder = MambaACMDecoder(config)
+            self.decoder = self._build_mamba_decoder(config)
         else:
             self.decoder = ACTDecoder(config)
 
@@ -567,6 +572,14 @@ class ACM(nn.Module):
             self.action_conv_refiner = None
 
         self._reset_parameters()
+
+    def _build_mamba_decoder(self, config: ACMConfig) -> "MambaACMDecoder":
+        """Which Mamba decoder this model uses. Overridden by variants that change
+        only the scan (e.g. acm_bimamba's whole-sequence flip). It is a hook rather
+        than a post-hoc `self.decoder = ...` swap so the decoder is constructed
+        exactly once, keeping RNG consumption -- and therefore the initial weights
+        for a given seed -- identical to building it inline here."""
+        return MambaACMDecoder(config)
 
     def _reset_parameters(self):
         """Xavier initialization for Transformer parts only.
