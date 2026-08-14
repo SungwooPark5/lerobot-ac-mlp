@@ -1,0 +1,11 @@
+set -e
+
+export CUDA_VISIBLE_DEVICES=0
+
+python eval_pure_te_acm_60k_pos_coeff.py
+
+python train_weight_residual_acm_60k_vis_pos_coeff_lam1p0.py
+python eval_with_weight_net_acm_60k_vis_pos_coeff_lam1p0.py
+
+python train_weight_residual_acm_60k_vis_pos_coeff_lam0p1.py
+python eval_with_weight_net_acm_60k_vis_pos_coeff_lam0p1.py

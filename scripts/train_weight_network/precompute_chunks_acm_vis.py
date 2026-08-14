@@ -1,0 +1,143 @@
+"""Stage 1: baseline ACM으로 dataset 모든 frame chunk + image feature 미리 계산."""
+import sys
+sys.path.insert(0, "/home1/eunji24/lerobot_project/lerobot-ac-mlp/src")
+
+import torch
+import numpy as np
+from pathlib import Path
+from tqdm import tqdm
+
+from lerobot.policies.acm.modeling_acm import ACMPolicy
+from lerobot.configs.policies import PreTrainedConfig
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.policies.factory import make_pre_post_processors
+
+BASELINE_DIR = Path("/home1/eunji24/lerobot_project/lerobot-ac-mlp/outputs/train/acm_transfer_cube_test_100k/checkpoints/060000/pretrained_model")
+DATASET_REPO_ID = "lerobot/aloha_sim_transfer_cube_human"
+CACHE_DIR = Path("/home1/eunji24/lerobot_project/cache/acm_60k_chunks_vis")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def extract_visual_feature(policy, batch):
+    """
+    ACM/ACT backbone output 형식이 다를 수 있어서 안전하게 처리.
+    최종적으로 [B, C] image feature 반환.
+    """
+    image = batch["observation.images.top"]
+    out = policy.model.backbone(image)
+
+    if isinstance(out, torch.Tensor):
+        feat_map = out
+    elif isinstance(out, dict):
+        if "feature_map" in out:
+            feat_map = out["feature_map"]
+        else:
+            # dict인데 feature_map key가 없으면 마지막 value 사용
+            feat_map = list(out.values())[-1]
+    elif isinstance(out, (list, tuple)):
+        feat_map = out[-1]
+    else:
+        raise TypeError(f"Unsupported backbone output type: {type(out)}")
+
+    if feat_map.ndim == 4:
+        vis_feat = feat_map.mean(dim=(-2, -1))  # [B, C, H, W] -> [B, C]
+    elif feat_map.ndim == 3:
+        vis_feat = feat_map.mean(dim=1)         # [B, T, C] -> [B, C]
+    elif feat_map.ndim == 2:
+        vis_feat = feat_map                     # [B, C]
+    else:
+        raise ValueError(f"Unexpected feat_map shape: {feat_map.shape}")
+
+    return vis_feat
+
+
+print(f"Loading ACM baseline from {BASELINE_DIR}")
+config = PreTrainedConfig.from_pretrained(str(BASELINE_DIR))
+print(f"  use_vae: {config.use_vae}, chunk_size: {config.chunk_size}")
+
+policy = ACMPolicy.from_pretrained(str(BASELINE_DIR)).to(DEVICE)
+policy.eval()
+
+preprocessor, _ = make_pre_post_processors(
+    policy_cfg=config,
+    pretrained_path=str(BASELINE_DIR),
+    preprocessor_overrides={
+        "device_processor": {"device": str(DEVICE)},
+    },
+)
+
+print(f"Loading dataset {DATASET_REPO_ID}")
+dataset = LeRobotDataset(DATASET_REPO_ID)
+N = len(dataset)
+print(f"  Total frames: {N}, Episodes: {dataset.num_episodes}")
+
+sample0 = dataset[0]
+state_dim = sample0["observation.state"].shape[0]
+action_dim = sample0["action"].shape[0]
+print(f"  state_dim={state_dim}, action_dim={action_dim}")
+
+chunks_arr = np.zeros((N, config.chunk_size, action_dim), dtype=np.float32)
+states_arr = np.zeros((N, state_dim), dtype=np.float32)
+actions_arr = np.zeros((N, action_dim), dtype=np.float32)
+ep_idx_arr = np.zeros(N, dtype=np.int64)
+
+# vis_dim은 ACM backbone에 따라 다를 수 있어서 list로 받은 뒤 stack
+vis_feats_list = []
+
+ep_starts = []
+frames_per_ep = N // dataset.num_episodes
+
+for ep in range(dataset.num_episodes):
+    f = ep * frames_per_ep
+    t = (ep + 1) * frames_per_ep
+    ep_starts.append((f, t))
+
+print(f"  frames_per_episode={frames_per_ep}")
+
+for ep, (f, t) in enumerate(ep_starts):
+    ep_idx_arr[f:t] = ep
+
+print("Computing ACM chunks + visual features...")
+with torch.no_grad():
+    for idx in tqdm(range(N)):
+        sample = dataset[idx]
+
+        batch = {}
+        for k, v in sample.items():
+            if torch.is_tensor(v):
+                batch[k] = v.unsqueeze(0)
+            else:
+                batch[k] = v
+
+        batch = preprocessor(batch)
+
+        vis_feat = extract_visual_feature(policy, batch)
+        chunk = policy.predict_action_chunk(batch)
+
+        chunks_arr[idx] = chunk[0].detach().cpu().numpy()
+        states_arr[idx] = sample["observation.state"].numpy()
+        actions_arr[idx] = sample["action"].numpy()
+        vis_feats_list.append(vis_feat[0].detach().cpu().numpy())
+
+vis_feats_arr = np.stack(vis_feats_list).astype(np.float32)
+
+print("Saving ACM cache...")
+np.savez_compressed(
+    CACHE_DIR / "chunks.npz",
+    chunks=chunks_arr,
+    states=states_arr,
+    actions=actions_arr,
+    vis_feats=vis_feats_arr,
+    image_key=np.array(["observation.images.top"]),
+    episode_idx=ep_idx_arr,
+    ep_starts=np.array(ep_starts),
+)
+
+print(f"Saved to {CACHE_DIR / 'chunks.npz'}")
+print(f"  chunks: {chunks_arr.shape}")
+print(f"  states: {states_arr.shape}")
+print(f"  actions: {actions_arr.shape}")
+print(f"  vis_feats: {vis_feats_arr.shape}")
+print(f"  size: ~{chunks_arr.nbytes / 1e6:.1f} MB chunks + {states_arr.nbytes / 1e6:.1f} MB states")

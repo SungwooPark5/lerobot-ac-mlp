@@ -1,0 +1,6 @@
+set -e
+
+python eval_pure_te_acm_60k_neg_coeff.py
+
+python train_weight_residual_acm_60k_vis_neg_coeff_lam5p0.py
+python eval_with_weight_net_acm_60k_vis_neg_coeff_lam5p0.py

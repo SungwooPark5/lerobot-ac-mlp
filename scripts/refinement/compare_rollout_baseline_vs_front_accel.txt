@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/gpfs/home1/eunji24/lerobot_project/lerobot-ac-mlp/scripts/refinement/compare_rollout_action_smoothness.py", line 314, in <module>
+    main()
+  File "/gpfs/home1/eunji24/lerobot_project/lerobot-ac-mlp/scripts/refinement/compare_rollout_action_smoothness.py", line 278, in main
+    base_files = find_episode_files(args.base_path)
+  File "/gpfs/home1/eunji24/lerobot_project/lerobot-ac-mlp/scripts/refinement/compare_rollout_action_smoothness.py", line 151, in find_episode_files
+    raise FileNotFoundError(f"Path does not exist: {p}")
+FileNotFoundError: Path does not exist: outputs/eval/acm_transfer_cube_test_100k/videos/action_logs
