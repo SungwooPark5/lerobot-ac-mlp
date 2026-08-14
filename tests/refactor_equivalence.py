@@ -110,6 +110,7 @@ WANTED = {
     "use_bimamba_decoder": True,
     "use_bimamba_forget_gate": True,
     "use_pre_cross_attention": True,
+    "use_moe_decoder_fusion": True,
     "use_vae": True,
     "vision_backbone": "resnet18",
     "pretrained_backbone_weights": None,

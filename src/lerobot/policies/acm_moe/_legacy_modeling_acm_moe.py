@@ -22,7 +22,6 @@ The majority of changes here involve removing unused code, unifying naming, and 
 import math
 from collections import deque
 from collections.abc import Callable
-from itertools import chain
 
 import einops
 import numpy as np
@@ -40,17 +39,17 @@ try:
 except ImportError:
     HAS_MAMBA = False
 
-from lerobot.policies.acm.configuration_acm import ACMConfig
+from lerobot.policies.acm_moe._legacy_configuration_acm_moe import ACMMoEConfig
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
-class ACMPolicy(PreTrainedPolicy):
-    config_class = ACMConfig
-    name = "acm"
+class ACMMoEPolicy(PreTrainedPolicy):
+    config_class = ACMMoEConfig
+    name = "acm_moe"
 
     def __init__(
         self,
-        config: ACMConfig,
+        config: ACMMoEConfig,
     ):
         """
         Args:
@@ -61,17 +60,12 @@ class ACMPolicy(PreTrainedPolicy):
         config.validate_features()
         self.config = config
 
-        self.model = self._build_model(config)
+        self.model = ACM(config)
 
         if config.temporal_ensemble_coeff is not None:
             self.temporal_ensembler = ACTTemporalEnsembler(config.temporal_ensemble_coeff, config.chunk_size)
 
         self.reset()
-
-    def _build_model(self, config: ACMConfig) -> "ACM":
-        """Which network this policy wraps. Subclasses that only swap a submodule
-        override this instead of reimplementing __init__."""
-        return ACM(config)
 
     def get_optim_params(self) -> dict:
         # TODO(aliberts, rcadene): As of now, lr_backbone == lr
@@ -174,26 +168,56 @@ class ACMPolicy(PreTrainedPolicy):
 
         loss_dict = {"l1_loss": l1_loss.item()}
 
-        smoothness_term = self._action_smoothness_loss(actions_hat, batch, loss_dict)
+        # ------------------------------------------------------------
+        # MoE branch auxiliary losses
+        #
+        # Purpose:
+        #   Prevent expert collapse.
+        #   Each expert branch should learn to predict valid expert actions,
+        #   instead of only the final mixed action being supervised.
+        # ------------------------------------------------------------
+        moe_branch_l1_loss = None
+        moe_gate_prior_loss = None
 
-        delta = getattr(self.model, "last_action_delta", None)
-        delta_mag_loss = None
-        delta_smooth_loss = None
+        if getattr(self.config, "use_moe_decoder_fusion", False):
+            mamba_actions = getattr(self.model, "last_mamba_actions", None)
+            act_actions = getattr(self.model, "last_act_actions", None)
+            moe_gate = getattr(self.model, "last_moe_gate", None)
+            moe_gate_for_prior = getattr(self.model, "last_moe_gate_for_prior", None)
 
-        if delta is not None:
-            pad_mask = ~batch["action_is_pad"]  # (B,T)
-            valid_delta = delta * pad_mask.unsqueeze(-1)
-            denom = pad_mask.sum().clamp(min=1) * delta.shape[-1]
-            delta_mag_loss = (valid_delta.pow(2).sum() / denom)
-            delta_diff = delta[:, 1:] - delta[:, :-1]
-            diff_mask = pad_mask[:, 1:] & pad_mask[:, :-1]
-            diff_denom = diff_mask.sum().clamp(min=1) * delta.shape[-1]
-            delta_smooth_loss = (
-                delta_diff.pow(2) * diff_mask.unsqueeze(-1)
-            ).sum() / diff_denom
+            if mamba_actions is not None and act_actions is not None:
+                branch_weights = (
+                    (~batch["action_is_pad"]).unsqueeze(-1).to(actions_hat.dtype)
+                    * weights
+                )
 
-            loss_dict["delta_mag_loss"] = delta_mag_loss.item()
-            loss_dict["delta_smooth_loss"] = delta_smooth_loss.item()
+                mamba_l1 = (
+                    F.l1_loss(batch[ACTION], mamba_actions, reduction="none")
+                    * branch_weights
+                ).mean()
+
+                act_l1 = (
+                    F.l1_loss(batch[ACTION], act_actions, reduction="none")
+                    * branch_weights
+                ).mean()
+
+                moe_branch_l1_loss = 0.5 * (mamba_l1 + act_l1)
+
+                loss_dict["moe_mamba_l1_loss"] = mamba_l1.item()
+                loss_dict["moe_act_l1_loss"] = act_l1.item()
+                loss_dict["moe_branch_l1_loss"] = moe_branch_l1_loss.item()
+
+            if moe_gate is not None:
+                loss_dict["moe_gate_mean"] = moe_gate.mean().item()
+                loss_dict["moe_gate_min"] = moe_gate.min().item()
+                loss_dict["moe_gate_max"] = moe_gate.max().item()
+
+            if moe_gate_for_prior is not None:
+                gate_target = float(getattr(self.config, "moe_gate_prior_target", 0.8))
+                gate_target_tensor = torch.full_like(moe_gate_for_prior, gate_target)
+
+                moe_gate_prior_loss = F.mse_loss(moe_gate_for_prior, gate_target_tensor)
+                loss_dict["moe_gate_prior_loss"] = moe_gate_prior_loss.item()
 
         if self.config.use_vae:
             # Calculate Dₖₗ(latent_pdf || standard_normal). Note: After computing the KL-divergence for
@@ -208,86 +232,13 @@ class ACMPolicy(PreTrainedPolicy):
         else:
             loss = l1_loss
 
-        if delta_mag_loss is not None:
-            loss = loss + self.config.delta_magnitude_weight * delta_mag_loss
-            loss = loss + self.config.delta_smoothness_weight * delta_smooth_loss
+        if moe_branch_l1_loss is not None:
+            loss = loss + self.config.moe_branch_l1_weight * moe_branch_l1_loss
 
-        if smoothness_term is not None:
-            loss = loss + smoothness_term
-
-        for term in self._extra_losses(actions_hat, batch, weights, loss_dict):
-            loss = loss + term
+        if moe_gate_prior_loss is not None:
+            loss = loss + self.config.moe_gate_prior_weight * moe_gate_prior_loss
 
         return loss, loss_dict
-
-    def _extra_losses(self, actions_hat, batch, weights, loss_dict) -> list[Tensor]:
-        """Variant-specific loss terms, already weighted, summed in list order.
-
-        A list rather than one tensor because summation order is not free in
-        floating point: acm_moe adds a branch-L1 term and a gate-prior term as two
-        separate steps, and folding them into one sum would not reproduce it.
-
-        `weights` is the temporal weighting applied to the main L1, passed through
-        so branch losses can be weighted the same way.
-        """
-        return []
-
-    def _action_smoothness_loss(self, actions_hat, batch, loss_dict) -> Tensor | None:
-        """Optional finite-difference penalty on the predicted chunk, added last.
-
-        `actions_hat` is the final output: the refined action when
-        action_conv_refiner is on, the action_head output otherwise. So this
-        backpropagates through the refiner.
-
-        acm penalises acceleration, accel[t] = a[t+2] - 2a[t+1] + a[t], over the
-        first `action_accel_front_steps` steps (0 = whole chunk). Variants override
-        this to change the order -- acm_refiner uses jerk. Returns the term already
-        multiplied by its weight, or None when the penalty is off.
-        """
-        action_accel_weight = getattr(self.config, "action_accel_weight", 0.0)
-        action_accel_front_steps = getattr(self.config, "action_accel_front_steps", 0)
-
-        if not (action_accel_weight > 0.0 and actions_hat.shape[1] >= 3):
-            return None
-
-        pad_mask = ~batch["action_is_pad"]  # (B, T)
-
-        T = actions_hat.shape[1]
-        front_steps = int(action_accel_front_steps)
-
-        if front_steps > 0:
-            end = min(front_steps, T)
-        else:
-            end = T
-
-        if end < 3:
-            return None
-
-        actions_for_accel = actions_hat[:, :end]
-        mask_for_accel = pad_mask[:, :end]
-
-        action_accel = (
-            actions_for_accel[:, 2:]
-            - 2.0 * actions_for_accel[:, 1:-1]
-            + actions_for_accel[:, :-2]
-        )
-
-        accel_mask = (
-            mask_for_accel[:, 2:]
-            & mask_for_accel[:, 1:-1]
-            & mask_for_accel[:, :-2]
-        )
-
-        accel_denom = accel_mask.sum().clamp(min=1) * actions_hat.shape[-1]
-
-        action_accel_loss = (
-            action_accel.pow(2) * accel_mask.unsqueeze(-1)
-        ).sum() / accel_denom
-
-        loss_dict["action_accel_loss"] = action_accel_loss.item()
-        loss_dict["action_accel_front_steps"] = float(end)
-
-        return action_accel_weight * action_accel_loss
 
 class ACTTemporalEnsembler:
     def __init__(self, temporal_ensemble_coeff: float, chunk_size: int) -> None:
@@ -379,84 +330,6 @@ class ACTTemporalEnsembler:
         )
         return action
 
-class ActionConvRefinerBlock(nn.Module):
-    """
-    Action-space ConvNeXt-style residual refinement.
-
-    Input:
-        raw_actions: (B, T, action_dim)
-
-    Output:
-        refined_actions: raw_actions + alpha * delta
-    """
-
-    def __init__(
-        self,
-        action_dim: int,
-        hidden_dim: int = 128,
-        kernel_size: int = 7,
-        expansion: int = 2,
-        alpha_init: float = 0.1,
-    ):
-        super().__init__()
-
-        self.in_proj = nn.Linear(action_dim, hidden_dim)
-
-        self.norm = nn.LayerNorm(hidden_dim)
-
-
-        self.dwconv = nn.Conv1d(
-            hidden_dim,
-            hidden_dim,
-            kernel_size=kernel_size,
-            padding=kernel_size // 2,
-            groups=hidden_dim,
-        )
-
-        self.pwconv1 = nn.Conv1d(
-            hidden_dim,
-            expansion * hidden_dim,
-            kernel_size=1,
-        )
-
-        self.pwconv2 = nn.Conv1d(
-            expansion * hidden_dim,
-            hidden_dim,
-            kernel_size=1,
-        )
-
-        self.out_proj = nn.Linear(hidden_dim, action_dim)
-        self.act = nn.GELU()
-
-        # 시작 시 delta=0 → final=raw_actions
-        nn.init.zeros_(self.out_proj.weight)
-        nn.init.zeros_(self.out_proj.bias)
-
-        # 고정이 아니라 학습 가능 scale
-        self.alpha = nn.Parameter(torch.tensor(alpha_init))
-
-    def forward(self, raw_actions: Tensor) -> Tensor:
-        residual = raw_actions
-
-        x = self.in_proj(raw_actions)     # (B, T, H)
-        x = self.norm(x)
-
-        x = x.transpose(1, 2)             # (B, H, T)
-        x = self.dwconv(x)
-        x = self.act(x)
-
-        x = self.pwconv1(x)
-        x = self.act(x)
-        x = self.pwconv2(x)
-
-        x = x.transpose(1, 2)             # (B, T, H)
-
-        delta = self.out_proj(x)
-        scale = torch.tanh(self.alpha)
-        self.last_delta = scale * delta
-
-        return residual + self.last_delta
-
 class ACM(nn.Module):
     """Action Chunking Transformer: The underlying neural network for ACMPolicy.
 
@@ -492,7 +365,7 @@ class ACM(nn.Module):
                                 └───────────────────────┘
     """
 
-    def __init__(self, config: ACMConfig):
+    def __init__(self, config: ACMMoEConfig):
         # BERT style VAE encoder with input tokens [cls, robot_state, *action_sequence].
         # The cls token forms parameters of the latent's distribution (like this [*means, *log_variances]).
         super().__init__()
@@ -538,10 +411,25 @@ class ACM(nn.Module):
         # Transformer (acts as VAE decoder when training with the variational objective).
         self.encoder = ACTEncoder(config)
 
-        self._build_decoders(config)
+        self.use_moe_decoder_fusion = getattr(config, "use_moe_decoder_fusion", False)
 
-        # ★ Old feature-space refinement head
-        self.refinement = None
+        if self.use_moe_decoder_fusion:
+            # Expert 1: Mamba/ACM decoder
+            self.decoder_mamba = MambaACMDecoder(config)
+
+            # Expert 2: Transformer/ACT decoder
+            self.decoder_act = ACTDecoder(config)
+
+            # In MoE mode, self.decoder is unused.
+            self.decoder = None
+        else:
+            if config.use_mamba:
+                self.decoder = MambaACMDecoder(config)
+            else:
+                self.decoder = ACTDecoder(config)
+
+            self.decoder_mamba = None
+            self.decoder_act = None
 
         # Transformer encoder input projections. The tokens will be structured like
         # [latent, (robot_state), (env_state), (image_feature_map_pixels)].
@@ -572,49 +460,39 @@ class ACM(nn.Module):
         # Learnable positional embedding for the transformer's decoder (in the style of DETR object queries).
         self.decoder_pos_embed = nn.Embedding(config.chunk_size, config.dim_model)
 
-        # Final action regression head on the output of the transformer's decoder.
+        # Final action regression head.
+        # Normal mode:
+        #   action_head is the only action head.
+        # MoE mode:
+        #   action_head is used for Mamba expert.
+        #   action_head_act is used for Transformer/ACT expert.
         self.action_head = nn.Linear(config.dim_model, self.config.action_feature.shape[0])
 
-        # ★ Action-space Conv refiner
-        if getattr(config, "use_action_conv_refiner", False):
-            self.action_conv_refiner = ActionConvRefinerBlock(
-                action_dim=self.config.action_feature.shape[0],
-                hidden_dim=getattr(config, "action_refiner_hidden_dim", 128),
-                kernel_size=getattr(config, "action_refiner_kernel_size", 7),
-                expansion=getattr(config, "action_refiner_expansion", 2),
-                alpha_init=getattr(config, "action_refiner_alpha_init", 0.1),
-            )
-        else:
-            self.action_conv_refiner = None
+        if getattr(config, "use_moe_decoder_fusion", False):
+            self.action_head_act = nn.Linear(config.dim_model, self.config.action_feature.shape[0])
 
-        self._build_extra_heads(config)
+            gate_hidden_dim = getattr(config, "moe_gate_hidden_dim", 128)
+
+            self.moe_gate = nn.Sequential(
+                nn.LayerNorm(config.dim_model),
+                nn.Linear(config.dim_model, gate_hidden_dim),
+                nn.GELU(),
+                nn.Linear(gate_hidden_dim, 1),
+            )
+
+            # Initialize gate to prefer ACT/Transformer branch.
+            # gate = sigmoid(logit), so logit(0.8) ≈ 1.386
+            gate_init = float(getattr(config, "moe_gate_init", 0.8))
+            gate_init = min(max(gate_init, 1e-4), 1.0 - 1e-4)
+            gate_bias = math.log(gate_init / (1.0 - gate_init))
+
+            nn.init.zeros_(self.moe_gate[-1].weight)
+            nn.init.constant_(self.moe_gate[-1].bias, gate_bias)
+        else:
+            self.action_head_act = None
+            self.moe_gate = None
 
         self._reset_parameters()
-
-    def _build_decoders(self, config: ACMConfig) -> None:
-        """Create the decoder(s) and assign them. Called from __init__ so that a
-        variant running more than one branch (acm_moe fuses a Mamba and an ACT
-        decoder) can allocate them at the point the single decoder would have
-        been, keeping RNG consumption -- and the initial weights for a given
-        seed -- in the same order."""
-        if config.use_mamba:
-            self.decoder = self._build_mamba_decoder(config)
-        else:
-            self.decoder = ACTDecoder(config)
-
-    def _build_extra_heads(self, config: ACMConfig) -> None:
-        """Hook right after action_head, the last RNG-consuming module here.
-        Variants with additional heads (acm_moe's second action head and gate MLP)
-        allocate them here so they land at the same point in the RNG stream, and
-        so they exist before _reset_parameters runs."""
-
-    def _build_mamba_decoder(self, config: ACMConfig) -> "MambaACMDecoder":
-        """Which Mamba decoder this model uses. Overridden by variants that change
-        only the scan (e.g. acm_bimamba's whole-sequence flip). It is a hook rather
-        than a post-hoc `self.decoder = ...` swap so the decoder is constructed
-        exactly once, keeping RNG consumption -- and therefore the initial weights
-        for a given seed -- identical to building it inline here."""
-        return MambaACMDecoder(config)
 
     def _reset_parameters(self):
         """Xavier initialization for Transformer parts only.
@@ -625,10 +503,30 @@ class ACM(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-        if not getattr(self.config, "use_mamba", False):
-            for p in self.decoder.parameters():
+        if getattr(self.config, "use_moe_decoder_fusion", False):
+            # Do not overwrite Mamba internal initialization.
+            # Initialize Transformer/ACT decoder branch.
+            for p in self.decoder_act.parameters():
                 if p.dim() > 1:
                     nn.init.xavier_uniform_(p)
+
+            # Initialize both action heads consistently.
+            for p in self.action_head.parameters():
+                if p.dim() > 1:
+                    nn.init.xavier_uniform_(p)
+
+            for p in self.action_head_act.parameters():
+                if p.dim() > 1:
+                    nn.init.xavier_uniform_(p)
+
+            # Do not touch moe_gate final layer after bias initialization.
+            # Its final layer is intentionally initialized to fixed prior gate.
+
+        else:
+            if not getattr(self.config, "use_mamba", False):
+                for p in self.decoder.parameters():
+                    if p.dim() > 1:
+                        nn.init.xavier_uniform_(p)
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
         """A forward pass through the Action Chunking Transformer (with optional VAE encoder).
@@ -747,44 +645,81 @@ class ACM(nn.Module):
             dtype=encoder_in_pos_embed.dtype,
             device=encoder_in_pos_embed.device,
         )
-        raw_actions = self._decode_to_actions(decoder_in, encoder_out, encoder_in_pos_embed)
 
         self.last_action_delta = None
 
-        if self.action_conv_refiner is not None:
+        if getattr(self.config, "use_moe_decoder_fusion", False):
+            # ------------------------------------------------------------
+            # Dense MoE-style decoder fusion:
+            #   Expert 1: Mamba decoder
+            #   Expert 2: Transformer/ACT decoder
+            #
+            # gate = sigmoid(gate_mlp(mean(encoder_out)))
+            # final = gate * ACT_actions + (1 - gate) * Mamba_actions
+            #
+            # gate close to 1.0 means ACT expert dominates.
+            # gate close to 0.0 means Mamba expert dominates.
+            # ------------------------------------------------------------
 
-            actions = self.action_conv_refiner(raw_actions)
+            mamba_decoder_out = self.decoder_mamba(
+                decoder_in,
+                encoder_out,
+                encoder_pos_embed=encoder_in_pos_embed,
+                decoder_pos_embed=self.decoder_pos_embed.weight.unsqueeze(1),
+            )
 
-            self.last_action_delta = self.action_conv_refiner.last_delta
+            act_decoder_out = self.decoder_act(
+                decoder_in,
+                encoder_out,
+                encoder_pos_embed=encoder_in_pos_embed,
+                decoder_pos_embed=self.decoder_pos_embed.weight.unsqueeze(1),
+            )
+
+            # Move back to (B, T, D).
+            mamba_decoder_out = mamba_decoder_out.transpose(0, 1)
+            act_decoder_out = act_decoder_out.transpose(0, 1)
+
+            # Branch-wise action predictions.
+            mamba_actions = self.action_head(mamba_decoder_out)
+            act_actions = self.action_head_act(act_decoder_out)
+
+            # Main gate: used for final action.
+            # Gradient from final L1 can update encoder + gate MLP.
+            gate_context = encoder_out.mean(dim=0)  # (B, D)
+            gate = torch.sigmoid(self.moe_gate(gate_context)).view(-1, 1, 1)
+
+            raw_actions = gate * act_actions + (1.0 - gate) * mamba_actions
+
+            # Prior gate: used only for gate-prior regularization.
+            # Detach encoder context so prior loss updates gate MLP only, not encoder.
+            gate_context_for_prior = encoder_out.mean(dim=0).detach()
+            gate_for_prior = torch.sigmoid(self.moe_gate(gate_context_for_prior)).view(-1, 1, 1)
+
+            self.last_mamba_actions = mamba_actions
+            self.last_act_actions = act_actions
+            self.last_moe_gate = gate
+            self.last_moe_gate_for_prior = gate_for_prior
 
         else:
+            decoder_out = self.decoder(
+                decoder_in,
+                encoder_out,
+                encoder_pos_embed=encoder_in_pos_embed,
+                decoder_pos_embed=self.decoder_pos_embed.weight.unsqueeze(1),
+            )
 
-            actions = raw_actions
+            # Move back to (B, T, D).
+            decoder_out = decoder_out.transpose(0, 1)
 
+            raw_actions = self.action_head(decoder_out)
+
+        actions = raw_actions
         return actions, (mu, log_sigma_x2)
-
-    def _decode_to_actions(self, decoder_in, encoder_out, encoder_in_pos_embed) -> Tensor:
-        """Run the decoder and project to actions, before any refinement.
-
-        Split out of forward so a variant can decode differently without copying
-        the whole encode path: acm_moe runs two decoders and gates between their
-        action predictions, and returns the mixture from here.
-        """
-        decoder_out = self.decoder(
-            decoder_in,
-            encoder_out,
-            encoder_pos_embed=encoder_in_pos_embed,
-            decoder_pos_embed=self.decoder_pos_embed.weight.unsqueeze(1),
-        )
-
-        # Move back to (B, S, C).
-        decoder_out = decoder_out.transpose(0, 1)
-        return self.action_head(decoder_out)
 
 class ACTEncoder(nn.Module):
     """Convenience module for running multiple encoder layers, maybe followed by normalization."""
 
-    def __init__(self, config: ACMConfig, is_vae_encoder: bool = False):
+    def __init__(self, config: ACMMoEConfig, is_vae_encoder: bool = False):
         super().__init__()
         self.is_vae_encoder = is_vae_encoder
         num_layers = config.n_vae_encoder_layers if self.is_vae_encoder else config.n_encoder_layers
@@ -800,7 +735,7 @@ class ACTEncoder(nn.Module):
         return x
 
 class ACTEncoderLayer(nn.Module):
-    def __init__(self, config: ACMConfig):
+    def __init__(self, config: ACMMoEConfig):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
 
@@ -838,47 +773,29 @@ class ACTEncoderLayer(nn.Module):
         return x
 
 class MambaACMDecoder(nn.Module):
-    def __init__(self, config: ACMConfig):
+    def __init__(self, config: ACMMoEConfig):
         super().__init__()
 
         if not HAS_MAMBA:
             raise ImportError("Mamba-ssm is not installed. Please install it to use 'use_mamba=true'")
 
-        self.use_bimamba_decoder = getattr(config, "use_bimamba_decoder", False)
-
-        def make_mamba_layers():
-            return nn.ModuleList(
-                [
-                    Mamba(
-                        d_model=config.dim_model,
-                        d_state=config.mamba_d_state,
-                        d_conv=config.mamba_d_conv,
-                        expand=config.mamba_expand,
-                    )
-                    for _ in range(config.n_decoder_layers)
-                ]
-            )
-
-        if self.use_bimamba_decoder:
-            self.forward_layers = make_mamba_layers()
-            self.backward_layers = make_mamba_layers()
-            self.layers = None
-        else:
-            self.layers = make_mamba_layers()
-            self.forward_layers = None
-            self.backward_layers = None
-        
+        self.layers = nn.ModuleList(
+            [
+                Mamba(
+                    d_model=config.dim_model,  # Model dimension
+                    d_state=config.mamba_d_state,  # SSM state expansion factor
+                    d_conv=config.mamba_d_conv,  # Local convolution width
+                    expand=config.mamba_expand,  # Block expansion factor
+                )
+                for _ in range(config.n_decoder_layers)
+            ]
+        )
         self.norm = nn.LayerNorm(config.dim_model)
-        
         self.use_action_self_attention = getattr(config, "use_action_self_attention", False)
         self.action_self_attention_use_gate = getattr(config, "action_self_attention_use_gate", False)
-        self.action_self_attention_use_forget_gate = getattr(
-            config, "action_self_attention_use_forget_gate", False
-        )
 
         if self.use_action_self_attention:
             self.action_self_attn_norm = nn.LayerNorm(config.dim_model)
-
             self.action_self_attn = nn.MultiheadAttention(
                 config.dim_model,
                 config.n_heads,
@@ -886,74 +803,16 @@ class MambaACMDecoder(nn.Module):
             )
             self.action_self_attn_dropout = nn.Dropout(config.dropout)
 
-            gamma_init = getattr(config, "action_self_attention_gamma_init", 1e-4)
-            self.action_self_attn_gamma = nn.Parameter(torch.tensor(float(gamma_init)))
-
-            if self.action_self_attention_use_forget_gate:
-                local_kernel_size = int(getattr(config, "action_self_attention_local_kernel_size", 3))
-                assert local_kernel_size % 2 == 1, "action_self_attention_local_kernel_size must be odd"
-
-                # Local temporal candidate path.
-                # This is not a post-action refiner. It only competes with the global attention candidate.
-                self.action_self_attn_local_conv = nn.Conv1d(
-                    in_channels=config.dim_model,
-                    out_channels=config.dim_model,
-                    kernel_size=local_kernel_size,
-                    padding=local_kernel_size // 2,
-                    groups=1,
-                )
-                self.action_self_attn_local_act = nn.SiLU()
-
-                self.action_self_attention_gate_scalar = getattr(
-                    config, "action_self_attention_gate_scalar", True
-                )
-                gate_dim = 1 if self.action_self_attention_gate_scalar else config.dim_model
-                self.action_self_attn_forget_gate = nn.Linear(config.dim_model, gate_dim)
-
-                gate_init = float(getattr(config, "action_self_attention_forget_gate_init", 0.5))
-                gate_init = min(max(gate_init, 1e-4), 1.0 - 1e-4)
-                gate_bias = math.log(gate_init / (1.0 - gate_init))
-
-                # Start from a constant gate. The model then learns token-dependent gate values.
-                nn.init.zeros_(self.action_self_attn_forget_gate.weight)
-                nn.init.constant_(self.action_self_attn_forget_gate.bias, gate_bias)
+            if self.action_self_attention_use_gate:
+                gamma_init = getattr(config, "action_self_attention_gamma_init", 1e-4)
+                self.action_self_attn_gamma = nn.Parameter(torch.tensor(float(gamma_init)))
             else:
-                self.action_self_attn_local_conv = None
-                self.action_self_attn_local_act = None
-                self.action_self_attn_forget_gate = None
-                self.action_self_attention_gate_scalar = True
+                self.action_self_attn_gamma = None
         else:
             self.action_self_attn_norm = None
             self.action_self_attn = None
             self.action_self_attn_dropout = None
             self.action_self_attn_gamma = None
-            self.action_self_attn_local_conv = None
-            self.action_self_attn_local_act = None
-            self.action_self_attn_forget_gate = None
-            self.action_self_attention_gate_scalar = True
-
-        self.use_pre_cross_attention = getattr(config, "use_pre_cross_attention", False)
-
-        if self.use_pre_cross_attention:
-            self.pre_cross_attn_norm_q = nn.LayerNorm(config.dim_model)
-            self.pre_cross_attn_norm_kv = nn.LayerNorm(config.dim_model)
-
-            self.pre_cross_attn = nn.MultiheadAttention(
-                config.dim_model,
-                config.n_heads,
-                dropout=config.dropout,
-            )
-
-            self.pre_cross_attn_dropout = nn.Dropout(config.dropout)
-
-            gamma_init = getattr(config, "pre_cross_attention_gamma_init", 1e-4)
-            self.pre_cross_attn_gamma = nn.Parameter(torch.tensor(float(gamma_init)))
-        else:
-            self.pre_cross_attn_norm_q = None
-            self.pre_cross_attn_norm_kv = None
-            self.pre_cross_attn = None
-            self.pre_cross_attn_dropout = None
-            self.pre_cross_attn_gamma = None
 
     def forward(
         self,
@@ -967,61 +826,16 @@ class MambaACMDecoder(nn.Module):
         if encoder_pos_embed is not None:
             encoder_out = encoder_out + encoder_pos_embed
 
-        if self.use_pre_cross_attention:
-            residual = x
-
-            q = self.pre_cross_attn_norm_q(x)
-            kv = self.pre_cross_attn_norm_kv(encoder_out)
-
-            cross_delta = self.pre_cross_attn(
-                query=q,
-                key=kv,
-                value=kv,
-                need_weights=False,
-            )[0]
-
-            cross_delta = self.pre_cross_attn_dropout(cross_delta)
-
-            scale = torch.tanh(self.pre_cross_attn_gamma)
-            x = residual + scale * cross_delta
-
         x = x.transpose(0, 1)
         encoder_out = encoder_out.transpose(0, 1)
 
         combined_seq = torch.cat([encoder_out, x], dim=1)
 
-        if self.use_bimamba_decoder:
-            encoder_len = encoder_out.shape[1]
+        for layer in self.layers:
+            combined_seq = layer(combined_seq)
 
-            encoder_tokens = combined_seq[:, :encoder_len, :]
-            action_tokens = combined_seq[:, encoder_len:, :]
-
-            forward_seq = combined_seq
-            for layer in self.forward_layers:
-                forward_seq = layer(forward_seq)
-
-            forward_action = forward_seq[:, encoder_len:, :]
-
-            backward_input = torch.cat(
-                [
-                    encoder_tokens,
-                    action_tokens.flip([1]),
-                ],
-                dim=1,
-            )
-
-            backward_seq = backward_input
-            for layer in self.backward_layers:
-                backward_seq = layer(backward_seq)
-
-            backward_action = backward_seq[:, encoder_len:, :].flip([1])
-
-            out = 0.5 * (forward_action + backward_action)
-        else:
-            for layer in self.layers:
-                combined_seq = layer(combined_seq)
-            chunk_size = x.shape[1]
-            out = combined_seq[:, -chunk_size:, :]  # (B, T, D)
+        chunk_size = x.shape[1]
+        out = combined_seq[:, -chunk_size:, :]  # (B, T, D)
 
         # ACT-style action-token self-attention.
         # This lets the 100 action tokens directly communicate before action_head.
@@ -1031,44 +845,18 @@ class MambaACMDecoder(nn.Module):
             residual = out_t
             out_norm = self.action_self_attn_norm(out_t)
 
-            # Global temporal candidate path.
-            attn_delta = self.action_self_attn(
+            attn_out = self.action_self_attn(
                 out_norm,
                 out_norm,
                 value=out_norm,
                 need_weights=False,
             )[0]
-            attn_delta = self.action_self_attn_dropout(attn_delta)
 
-            scale = torch.tanh(self.action_self_attn_gamma)
-
-            if self.action_self_attention_use_forget_gate:
-                # Local temporal candidate path.
-                # out_norm: [T, B, D] -> [B, D, T] -> [T, B, D]
-                local_delta = out_norm.permute(1, 2, 0)  # [B, D, T]
-                local_delta = self.action_self_attn_local_conv(local_delta)
-                local_delta = self.action_self_attn_local_act(local_delta)
-                local_delta = local_delta.permute(2, 0, 1)  # [T, B, D]
-                local_delta = self.action_self_attn_dropout(local_delta)
-
-                # Complementary forget gate.
-                # gate means how much to use global self-attention candidate.
-                # gate: [T, B, 1] if scalar, or [T, B, D] if channel-wise.
-                gate = torch.sigmoid(self.action_self_attn_forget_gate(out_norm))
-
-                mixed_delta = gate * attn_delta + (1.0 - gate) * local_delta
-
-                # Important:
-                # local_delta is NOT directly added as a refiner.
-                # It is only a candidate inside the complementary mixture.
-                out_t = residual + scale * mixed_delta
-
+            if self.action_self_attention_use_gate:
+                scale = torch.tanh(self.action_self_attn_gamma)
+                out_t = residual + scale * self.action_self_attn_dropout(attn_out)
             else:
-                # Original behavior.
-                if self.action_self_attention_use_gate:
-                    out_t = residual + scale * attn_delta
-                else:
-                    out_t = residual + attn_delta
+                out_t = residual + self.action_self_attn_dropout(attn_out)
 
             out = out_t.transpose(0, 1)  # (B, T, D)
 
@@ -1078,7 +866,7 @@ class MambaACMDecoder(nn.Module):
         return out.transpose(0, 1)
 
 class ACTDecoder(nn.Module):
-    def __init__(self, config: ACMConfig):
+    def __init__(self, config: ACMMoEConfig):
         """Convenience module for running multiple decoder layers followed by normalization."""
         super().__init__()
         self.layers = nn.ModuleList([ACTDecoderLayer(config) for _ in range(config.n_decoder_layers)])
@@ -1100,7 +888,7 @@ class ACTDecoder(nn.Module):
         return x
 
 class ACTDecoderLayer(nn.Module):
-    def __init__(self, config: ACMConfig):
+    def __init__(self, config: ACMMoEConfig):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
         self.multihead_attn = nn.MultiheadAttention(config.dim_model, config.n_heads, dropout=config.dropout)
