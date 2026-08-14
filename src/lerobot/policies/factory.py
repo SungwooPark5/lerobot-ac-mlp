@@ -31,6 +31,17 @@ from lerobot.envs.configs import EnvConfig
 from lerobot.envs.utils import env_to_policy_features
 from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.acm.configuration_acm import ACMConfig
+from lerobot.policies.acm2.configuration_acm2 import ACM2Config
+from lerobot.policies.acm2_bimamba.configuration_acm2_bimamba import ACM2BiMambaConfig
+from lerobot.policies.acm2_self_atten.configuration_acm2_self_atten import ACM2SelfAttenConfig
+from lerobot.policies.acm3.configuration_acm3 import ACM3Config
+from lerobot.policies.acm_accel_loss.configuration_acm_accel import ACMAccelConfig
+from lerobot.policies.acm_bimamba.configuration_acm_bimamba import ACMBiMambaConfig
+from lerobot.policies.acm_bimamba_gate.configuration_acm_bimamba_gate import ACMBiMambaGateConfig
+from lerobot.policies.acm_cross_atten.configuration_acm_cross_atten import ACMCrossAttenConfig
+from lerobot.policies.acm_moe.configuration_acm_moe import ACMMoEConfig
+from lerobot.policies.acm_refiner.configuration_acm_refiner import ACMRefineConfig
+from lerobot.policies.acm_self_atten.configuration_acm_self_atten import ACMSelfConfig
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.groot.configuration_groot import GrootConfig
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
@@ -87,6 +98,61 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.acm.modeling_acm import ACMPolicy
     
         return ACMPolicy
+
+    elif name == "acm2":
+        from lerobot.policies.acm2.modeling_acm2 import ACM2Policy
+
+        return ACM2Policy
+
+    elif name == "acm3":
+        from lerobot.policies.acm3.modeling_acm3 import ACM3Policy
+
+        return ACM3Policy
+
+    elif name == "acm_bimamba":
+        from lerobot.policies.acm_bimamba.modeling_acm_bimamba import ACMBimambaPolicy
+
+        return ACMBimambaPolicy
+
+    elif name == "acm_bimamba_gate":
+        from lerobot.policies.acm_bimamba_gate.modeling_acm_bimamba_gate import ACMBiMambaGatePolicy
+
+        return ACMBiMambaGatePolicy
+
+    elif name == "acm_refiner":
+        from lerobot.policies.acm_refiner.modeling_acm_refiner import ACMRefinePolicy
+
+        return ACMRefinePolicy
+
+    elif name == "acm_cross_atten":
+        from lerobot.policies.acm_cross_atten.modeling_acm_cross_atten import ACMCrossPolicy
+
+        return ACMCrossPolicy
+
+    elif name == "acm_moe":
+        from lerobot.policies.acm_moe.modeling_acm_moe import ACMMoEPolicy
+
+        return ACMMoEPolicy
+
+    elif name == "acm_self_atten":
+        from lerobot.policies.acm_self_atten.modeling_acm_sekf_atten import ACMSelfPolicy
+
+        return ACMSelfPolicy
+
+    elif name == "acm_accel_loss":
+        from lerobot.policies.acm_accel_loss.modeling_acm_accel import ACMAccelPolicy
+
+        return ACMAccelPolicy
+
+    elif name == "acm2_bimamba":
+        from lerobot.policies.acm2_bimamba.modeling_acm2_bimamba import ACM2BiMambaPolicy
+
+        return ACM2BiMambaPolicy
+
+    elif name == "acm2_self_atten":
+        from lerobot.policies.acm2_self_atten.modeling_acm2_self_atten import ACM2SelfAttenPolicy
+
+        return ACM2SelfAttenPolicy
 
     elif name == "vqbet":
         from lerobot.policies.vqbet.modeling_vqbet import VQBeTPolicy
@@ -154,6 +220,28 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return ACTConfig(**kwargs)
     elif policy_type == "acm":
         return ACMConfig(**kwargs)
+    elif policy_type == "acm2":
+        return ACM2Config(**kwargs)
+    elif policy_type == "acm3":
+        return ACM3Config(**kwargs)
+    elif policy_type == "acm_bimamba":
+        return ACMBiMambaConfig(**kwargs)
+    elif policy_type == "acm_bimamba_gate":
+        return ACMBiMambaGateConfig(**kwargs)
+    elif policy_type == "acm_refiner":
+        return ACMRefineConfig(**kwargs)
+    elif policy_type == "acm_cross_atten":
+        return ACMCrossAttenConfig(**kwargs)
+    elif policy_type == "acm_moe":
+        return ACMMoEConfig(**kwargs)
+    elif policy_type == "acm_self_atten":
+        return ACMSelfConfig(**kwargs)
+    elif policy_type == "acm_accel_loss":
+        return ACMAccelConfig(**kwargs)
+    elif policy_type == "acm2_bimamba":
+        return ACM2BiMambaConfig(**kwargs)
+    elif policy_type == "acm2_self_atten":
+        return ACM2SelfAttenConfig(**kwargs)
     elif policy_type == "vqbet":
         return VQBeTConfig(**kwargs)
     elif policy_type == "pi0":
@@ -298,6 +386,25 @@ def make_pre_post_processors(
             dataset_stats=kwargs.get("dataset_stats"),
         )
 
+    elif isinstance(policy_cfg, ACM3Config):
+        from lerobot.policies.acm3.processor_acm3 import make_acm3_pre_post_processors
+
+        processors = make_acm3_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get('dataset_stats'),
+        )
+
+    elif isinstance(policy_cfg, ACM2Config):
+        from lerobot.policies.acm2.processor_acm2 import make_acm2_pre_post_processors
+
+        processors = make_acm2_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get('dataset_stats'),
+        )
+
+    # Every acm_* variant config subclasses ACMConfig, so this one branch covers
+    # them all. Their own processor_*.py files are copies of acm's differing only
+    # in names, and are not wired up.
     elif isinstance(policy_cfg, ACMConfig):
         from lerobot.policies.acm.processor_acm import make_acm_pre_post_processors
 
