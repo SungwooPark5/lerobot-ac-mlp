@@ -25,9 +25,16 @@ initialised from the same random draw". (2) is stricter than equivalence needs
 but is what keeps old runs reproducible, so a failure there is a warning, not
 an error -- the exit code is 2 rather than 0.
 
-Results so far (RTX A6000):
-  acm_bimamba   PASS (1,2,3)   842 -> 119 lines, loss 79.96869659
-  acm_refiner   PASS (1,2,3)  1231 -> 219 lines, loss 79.94760895
+Results so far (RTX A6000), all three checks passing:
+  acm_bimamba        842 -> 119 lines, 198 tensors, loss 79.96869659
+  acm_refiner       1231 -> 219 lines, 191 tensors, loss 79.94760895
+  acm_bimamba_gate  1122 -> 157 lines, 204 tensors, loss 79.91233063
+
+acm_bimamba was re-run after BiMambaWholeFlipDecoder gained the _post_scan hook
+and returned the same loss to the last digit, which is the hook being an
+identity rather than an assertion that it is. acm_bimamba_gate's 204 tensors are
+acm_bimamba's 198 plus the gate's six, so the gate really was built and executed
+-- with use_bimamba_forget_gate left at its default it would not have been.
 
 Caveat for acm_refiner and, from a quick scan, acm_cross_atten / acm_moe /
 acm_self_atten / acm_accel_loss: those configs never declared mamba_d_state,
