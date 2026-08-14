@@ -25,8 +25,18 @@ initialised from the same random draw". (2) is stricter than equivalence needs
 but is what keeps old runs reproducible, so a failure there is a warning, not
 an error -- the exit code is 2 rather than 0.
 
-Results so far:
-  acm_bimamba   PASS (1,2,3)  842 -> 119 lines, RTX A6000, loss 79.96869659
+Results so far (RTX A6000):
+  acm_bimamba   PASS (1,2,3)   842 -> 119 lines, loss 79.96869659
+  acm_refiner   PASS (1,2,3)  1231 -> 219 lines, loss 79.94760895
+
+Caveat for acm_refiner and, from a quick scan, acm_cross_atten / acm_moe /
+acm_self_atten / acm_accel_loss: those configs never declared mamba_d_state,
+mamba_d_conv or mamba_expand while their decoders read all three, so the
+pre-refactor policy raised AttributeError on construction and could not run at
+all. The frozen config gets those three fields back at ACMConfig's values (the
+ones the refactored config now inherits) purely so there is something to compare
+against; the comparison is then against what the original would have computed
+had it been runnable.
 """
 
 import argparse
