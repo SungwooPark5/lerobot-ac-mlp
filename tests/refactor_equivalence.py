@@ -30,6 +30,7 @@ Results so far:
 """
 
 import argparse
+import dataclasses
 import importlib
 import sys
 
@@ -80,27 +81,41 @@ def find_policy_class(module, variant: str):
     return hits[0]
 
 
-def make_config(config_cls):
-    """Small but structurally faithful: BiMamba on, VAE on, one camera.
+WANTED = {
+    "chunk_size": CHUNK,
+    "n_action_steps": CHUNK,
+    "dim_model": 64,
+    "n_heads": 4,
+    "dim_feedforward": 128,
+    "n_encoder_layers": 1,
+    "n_decoder_layers": 1,
+    "use_mamba": True,
+    "use_bimamba_decoder": True,
+    "use_vae": True,
+    "vision_backbone": "resnet18",
+    "pretrained_backbone_weights": None,
+    "temporal_ensemble_coeff": None,
+}
 
-    Built off the variant's own config class, so variant-specific fields keep
-    their defaults -- which is what the pre-refactor file ran with.
+
+def shared_kwargs(*config_classes) -> dict:
+    """The settings above, restricted to fields every config class declares.
+
+    The frozen configs are older snapshots with fewer fields -- acm_bimamba
+    declares use_bimamba_decoder, acm_refiner does not -- and passing an unknown
+    one is a TypeError. Intersecting rather than filtering per class matters:
+    filtering separately would hand the refactored config a field its frozen
+    counterpart never saw, and the two sides would no longer be running the same
+    settings. Anything dropped is exercised at its default, which is the value
+    the pre-refactor code effectively ran with.
     """
-    cfg = config_cls(
-        chunk_size=CHUNK,
-        n_action_steps=CHUNK,
-        dim_model=64,
-        n_heads=4,
-        dim_feedforward=128,
-        n_encoder_layers=1,
-        n_decoder_layers=1,
-        use_mamba=True,
-        use_bimamba_decoder=True,
-        use_vae=True,
-        vision_backbone="resnet18",
-        pretrained_backbone_weights=None,
-        temporal_ensemble_coeff=None,
-    )
+    known = set.intersection(*({f.name for f in dataclasses.fields(c)} for c in config_classes))
+    return {k: v for k, v in WANTED.items() if k in known}
+
+
+def make_config(config_cls, kwargs: dict):
+    """Small but structurally faithful: VAE on, one camera, BiMamba where supported."""
+    cfg = config_cls(**kwargs)
     cfg.input_features = {
         OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(STATE_DIM,)),
         f"{OBS_IMAGES}.top": PolicyFeature(type=FeatureType.VISUAL, shape=(3, *IMG_HW)),
@@ -136,9 +151,9 @@ def seed_all(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def build(policy_cls, device):
+def build(policy_cls, kwargs, device):
     seed_all(SEED)
-    return policy_cls(make_config(policy_cls.config_class)).to(device)
+    return policy_cls(make_config(policy_cls.config_class, kwargs)).to(device)
 
 
 def fail(msg: str) -> None:
@@ -173,8 +188,10 @@ def main() -> None:
     NewPolicy = find_policy_class(new_mod, variant)
     print(f"comparing {LegacyPolicy.__name__} (legacy) vs {NewPolicy.__name__} (new), seed {SEED}")
 
-    old = build(LegacyPolicy, device)
-    new = build(NewPolicy, device)
+    kwargs = shared_kwargs(LegacyPolicy.config_class, NewPolicy.config_class)
+    print(f"config fields applied: {len(kwargs)}/{len(WANTED)}")
+    old = build(LegacyPolicy, kwargs, device)
+    new = build(NewPolicy, kwargs, device)
 
     # ── 1. parameter structure ────────────────────────────────────────────────
     old_sd, new_sd = old.state_dict(), new.state_dict()
