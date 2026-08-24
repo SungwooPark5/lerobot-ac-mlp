@@ -19,37 +19,62 @@
 
 ---
 
+## 오늘 밤 실행 (6 GPU = 3노드 x 2 GPU) — **여기부터**
+
+`exp5_tonight.py` + `nA_tonight.ipynb` / `nB_tonight.ipynb` / `nC_tonight.ipynb`.
+아래 P1~P3은 그 노트북들의 잡 우선순위로 **이미 들어가 있다.** 노트북이 인벤토리를 스캔해서
+학습 안 된 것은 학습 큐로, 된 것은 eval 큐로 자동 분류한다.
+
+| 노드 | GPU | 기본 역할 |
+|---|---|---|
+| A | 0,1 | 학습 2잡 (~15h, 내일 오후 해금) |
+| B | 0,1 | eval (우선순위 짝수 index) |
+| C | 0,1 | eval (우선순위 홀수 index) |
+
+역할은 고정이 아니다. `X.suggest()` 가 ready eval 큐 깊이를 보고 조정한다
+(≥24셀이면 B·C 둘 다 eval, 1~23셀이면 C도 학습, 0셀이면 셋 다 학습).
+**출력이 "기본값과 다르다"고 하면 알려주는 `X.ROLE_OVERRIDE = ...` 한 줄을 세 노트북 모두에 넣어야
+잡이 안 겹친다.**
+
+예산: eval 1셀(LIBERO-10 x 50ep/task = 500ep) ≈ 2 GPU-h / 학습 1잡(150k) ≈ 15 GPU-h
+(해준님 8/11 실측 "500ep 2시간, 5000ep 하루").
+
+---
+
 ## 실행 순서
 
-### P1 (최우선) — `exp3_act_te_ksweep.ipynb`
+### P1 (최우선) — TE 축, 크로스오버 K 찍기
 
-**이 노트북은 아직 한 번도 안 돌았다** (outputs 전부 비어 있음). UBAI가 8/17~8/24 죽어 있어서다.
-그래서 K 스윕 표의 `act+TE` 열이 통째로 비어 있다.
+⚠️ **이 문서의 이전 버전은 "act+TE 는 K 5개를 학습해야 한다"고 썼는데 틀렸다.**
+`common_final.act_te_eval_cmd` 가 하듯 **TE 는 ACT 체크포인트에 플래그만 얹으면 된다**
+(`--policy.temporal_ensemble_coeff=0.01 --policy.n_action_steps=1`). **ACT ckpt 가 있는 K 는 재학습 0.**
+ACT ckpt 는 K=50, K=100 이 이미 있다.
+
+그리고 K=100 은 **이미 측정돼 있다** (8/18 슬라이드 88, overlap off):
 
 | K | act+TE | bimamba+TE | bimamba+carry+TE |
 |---|---|---|---|
-| 10 | **?** | 75.4 | 74.3 |
-| 15 | **?** | 75.6 | 76.4 |
-| 20 | **?** | 71.4 | 71.9 |
-| 50 | **?** | 64.1 | 63.6 |
-| 100 | **?** | 49.3 | 50.2 |
-| 150 | **?** | 26.8 | 27.1 |
+| 10 | ? | 75.4 | 74.3 |
+| 15 | ? | 75.6 | 76.4 |
+| 20 | ? | 71.4 | 71.9 |
+| 50 | **오늘 밤 (eval만)** | 64.1 | 63.6 |
+| 100 | **30.5 ✅** | **49.3 ✅** | 50.2 |
+| 150 | ACT K=150 학습 후 | 26.8 | 27.1 |
 
-**이 한 열이 논문 존폐를 가른다.** `bimamba+TE`가 `act+TE`를 이기는 K 구간이 있으면 교수님이 말씀하신
-"ACT가 무너지는 지점"이 확보된다. 없으면 3번 분기다.
+즉 **"ACT 가 무너지는 지점"은 이미 손에 있다** — K=100, TE on 에서 +18.8pt.
+지금 할 일은 그걸 *발견*하는 게 아니라 **크로스오버 K 를 찍는 것**이다.
+K=50 에서 act+TE 가 이기고 K=100 에서 뒤집히면 그게 논문 그림 1이다.
 
-K=100은 기존 `act` 폴더 재사용이라 학습 스킵, 나머지 5개 K만 학습하면 된다.
+### P2 — `exp4_regime_map` 축 (K × 실행 stride, TE off)
 
-### P2 — `exp4_regime_map.ipynb` (신규)
+변형 4종(ACT / carry / bimamba / bimos). stride 는 추론 파라미터라 **재학습 없이 eval 플래그만**
+바꾸면 된다 → 기존 ckpt 로 커버. 8/18 가설("BiMamba 는 긴 stride, carry 는 짧은 stride")을
+하나의 표로 확정하는 게 목적.
 
-K × 실행 stride 격자, 변형 4종(ACT / carry / bimamba / bimos). **TE off.**
-stride는 추론 파라미터라 **재학습 없이 eval 플래그만** 바꾸면 된다 → 기존 ckpt로 전부 커버 가능.
+### P3 — 순수 BiMamba 학습 (`bimamba_pure`)
 
-8/18 가설("BiMamba는 긴 stride, carry는 짧은 stride")을 하나의 표로 확정하는 게 목적.
-
-### P3 — 순수 BiMamba 재학습 (P2 결과가 가리키는 K만)
-
-아래 "교란 2" 참조. P2에서 유망한 K가 나오면 그것만.
+아래 "교란 2" 참조. `exp5_tonight` 의 학습 큐 **1순위**로 이미 올라가 있다
+(K=100 부터, 이어서 K=50/150/20).
 
 ---
 
@@ -84,8 +109,11 @@ if self.temporal_ensemble_coeff is not None and self.n_action_steps > 1:
 8/18에 은지님이 "bimamba only를 전부 켜고 돌려서 다시 측정해야겠다"고 하신 그 문제가 코드에 그대로 있다.
 eval에서 `sscp_enabled=false`를 걸어도 **학습은 chunk-pair로 된 상태**라 순수 BiMamba가 아니다.
 
-→ `exp4`는 이걸 `bimamba_cpoff`로 **라벨에 명시**해 둔다. 값이 좋게 나오면 그 K만
-`use_chunk_pairs=False`로 새로 학습해서 확정한다(P3).
+→ `exp5_tonight`은 두 갈래로 간다.
+  - **오염된 프록시**(싼 것): 기존 ckpt에 `sscp_enabled=false`만 걸어 eval. 라벨 = `bimamba_cpoff`.
+    표에 그대로 남겨 오염 사실을 숨기지 않는다.
+  - **순수판**(비싼 것): `bimamba_pure` 태그 = `use_chunk_pairs=False` + `_CARRY_OFF`로 **새로 학습**.
+    학습 큐 1순위. 노드 A의 dry-run에서 `--use_chunk_pairs`가 **없는지** 반드시 눈으로 확인할 것.
 
 ### 교란 3 — 기존 표에 libero/aloha가 섞여 있다
 
