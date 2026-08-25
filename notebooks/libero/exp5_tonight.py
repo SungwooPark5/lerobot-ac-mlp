@@ -322,30 +322,34 @@ def _nodes_with(role):
     return [n for n in NODES if role_of(n) == role]
 
 
-def suggest(verbose=True):
-    """인벤토리를 보고 오늘 밤 노드 역할을 추천한다.
+EVAL_NODE_ORDER = ("B", "C", "A")   # eval 을 먼저 배정받는 순서 (A 는 기본이 학습 노드)
 
-    eval 은 ckpt 가 있어야 돌아가므로, ready eval 큐가 얕으면 GPU 를 학습으로 돌리는 게 맞다.
-    (학습 1잡 15h = eval 7.5셀 값어치. 하지만 학습은 '내일 이후'를 열어주는 유일한 수단이다.)
+
+def suggest(verbose=True):
+    """인벤토리를 보고 노드 역할을 추천한다.
+
+    규칙: **ready eval 큐를 먼저 포화시키고, 남는 노드만 학습에 준다.**
+
+    한 노드(2 GPU)의 하룻밤 처리량은 eval ~12셀 vs 학습 2잡이다. 그런데 학습 2잡이
+    나중에 열어주는 eval 은 보통 몇 셀뿐이라, **지금 돌릴 수 있는 eval 이 쌓여 있으면
+    eval 이 거의 항상 이긴다.** 학습은 eval 큐가 얕을 때(= GPU 가 남을 때) 하는 일이다.
+    (2026-08-25 수정: 이전 규칙은 '학습 큐가 비지 않으면 A=학습' 이라 ready eval 61셀 /
+     남은 학습 3잡인 상황에서도 계속 A 를 학습으로 보냈다.)
     """
     n_ev, n_tr = len(eval_queue()), len(train_queue())
-    # eval 노드는 '꽉 찰 때만' 늘린다. 절반만 도는 eval 노드보다, 학습이 밀려 있으면
-    # 그 GPU 를 학습에 주는 게 낫다(학습만이 내일 이후의 eval 을 열어준다).
     if n_tr == 0:
-        n_eval_nodes = 2                                       # 학습할 게 없으면 전부 eval
-    elif n_ev >= 2 * EVAL_CELLS_PER_NODE:
-        n_eval_nodes = 2                                       # 두 노드 다 포화 -> 둘 다 eval
-    elif n_ev > 0:
-        n_eval_nodes = 1                                       # 한 노드면 충분 -> 나머지는 학습
+        n_eval_nodes = len(NODES)                      # 학습할 게 없으면 전부 eval
+    elif n_ev == 0:
+        n_eval_nodes = 0                               # 돌릴 eval 이 없으면 전부 학습
     else:
-        n_eval_nodes = 0                                       # 돌릴 eval 이 없다 -> 전부 학습
-    roles = {"A": "train", "B": "eval", "C": "eval"}
-    if n_eval_nodes <= 1:
-        roles["C"] = "train"
-    if n_eval_nodes == 0:
-        roles["B"] = "train"
+        n_eval_nodes = min(len(NODES), -(-n_ev // EVAL_CELLS_PER_NODE))
+    roles = {n: "train" for n in NODES}
+    for n in EVAL_NODE_ORDER[:n_eval_nodes]:
+        roles[n] = "eval"
     if verbose:
-        print(f"ready eval 큐 {n_ev}셀 (노드당 밤 12h ≈ {EVAL_CELLS_PER_NODE}셀) / 학습 대기 {n_tr}잡")
+        cap = n_eval_nodes * EVAL_CELLS_PER_NODE
+        print(f"ready eval 큐 {n_ev}셀 (노드당 하룻밤 ≈ {EVAL_CELLS_PER_NODE}셀) / 학습 대기 {n_tr}잡")
+        print(f"  -> eval 노드 {n_eval_nodes}대(처리량 {cap}셀) / 학습 노드 {len(NODES) - n_eval_nodes}대")
         print(f"추천 역할: {roles}")
         changed = {n: r for n, r in roles.items() if r != NODE_ROLE[n]}
         if changed:
