@@ -6,33 +6,49 @@
 노트북 3개(nA/nB/nC_tonight.ipynb)가 전부 이 모듈만 부른다. 잡 정의/우선순위/스킵/집계가 전부 여기.
 
 --------------------------------------------------------------------------
-설계 근거 3가지 (바꾸기 전에 반드시 읽을 것)
+승리 조건 (8/25 재설계 — 이게 이 파일의 우선순위를 결정한다)
+--------------------------------------------------------------------------
+"ACT 를 넘는다" 는 두 가지가 섞여 있었고 둘 다 명시적으로 노린다.
+
+  W1. 동일 세팅 우위 — 같은 (K, stride, TE) 에서 ours > ACT.
+      이미 있다: K=100 TE 에서 +18.8 (49.3 vs 30.5), K=100 s100 TE-off +10.1.
+  W2. 토너먼트 우위 — 각 방법에 **같은 탐색 예산**(K x stride x TE on/off)을 주고
+      방법별 best 끼리 비교했을 때 우리가 1등. 은지님 8/24 "67.6 을 넘을 값"이 이것.
+      우리 best 후보만 골라 놓고 ACT 는 한 세팅만 재면 체리피킹이라 리뷰에서 깨진다.
+
+W2 의 판정 셀 = act+TE @ K=10/15/20. 우리 최고 후보(BiMamba+TE 75.4/75.6/71.4,
+은지님 K sweep)가 전부 짧은 K 에 있는데, 그 K 들의 act+TE 열이 통째로 비어 있다.
+K=20 은 act ckpt 가 있어 **eval 하나로 오늘 판정**된다. K=10/15 는 학습이 필요하다
+(critical — suggest() 가 eval 큐 깊이와 무관하게 노드를 선점시킨다).
+
+리스크: 짧은 K + TE 는 LIBERO 표준 세팅(= ACT 홈그라운드)이다. act+TE 가 다 이기면
+W2 는 없다. 그 경우 폴백 = W1(긴 chunk 크로스오버 + 효율) + real-world(SO-101).
+어느 쪽이든 내일이면 판정된다.
+
+--------------------------------------------------------------------------
+설계 근거 3가지
 --------------------------------------------------------------------------
 1. TE 는 재학습이 필요 없다.  common_final.act_te_eval_cmd 가 하듯 ACT ckpt 에
    `--policy.temporal_ensemble_coeff=0.01 --policy.n_action_steps=1` 만 얹으면 된다.
-   README_EXP_PLAN 의 "act+TE 는 K 5개 학습 필요"는 틀렸다. ACT ckpt 가 있는 K 는 eval 만 하면 된다.
-   그리고 K=100 은 이미 측정돼 있다(슬라이드 88: ACT+TE 30.5 vs BiMamba+TE 49.3 = +18.8).
-   -> 지금 할 일은 "무너지는 지점 발견"이 아니라 **크로스오버 K 를 찍는 것**이다.
+   ACT ckpt 가 있는 K 는 eval 만 하면 된다.
 
 2. TE 와 stride 는 같은 축에 못 놓는다. configuration_acm2.py 가
    `temporal_ensemble_coeff is not None and n_action_steps > 1` 를 NotImplementedError 로 막는다.
    -> TE 축(stride=1 고정, K 변화) 과 stride 축(TE off) 은 별개 잡군이다.
+   따라서 stride 큰 레짐에서만 "추론 호출 K 배 절약" 효율 주장이 성립한다 — TE 는 매 스텝 추론.
 
-3. 기존 `bimamba` 태그는 순수 BiMamba 가 아니다.  MODEL_CONFIGS 에서 _CARRY_ON +
-   use_chunk_pairs=True 로 학습됐다. eval 에서 sscp_enabled=false 를 걸어도 **학습이
-   chunk-pair** 라 오염돼 있다(은지님 8/18 지적). -> 순수판 `bimamba_pure` 를 새로 학습한다.
-   그동안 쓰는 오염된 프록시는 라벨에 `_cpoff` 로 명시해 표에 그대로 남긴다.
+3. 기존 `bimamba` 태그는 순수 BiMamba 가 아니다.  _CARRY_ON + use_chunk_pairs=True 로
+   학습됐다(은지님 8/18 지적). 순수판 `bimamba_pure` 는 8/24 밤에 K=50/100/150 학습 완료.
+   오염된 프록시는 `bimamba_cpoff` 라벨로 표에 그대로 남긴다. 은지님의 75.4(K=10)는
+   은지님 환경 + 오염판 값이므로, UBAI 에서 순수판으로 재측정해야 논문에 쓴다.
 
 --------------------------------------------------------------------------
-예산 (실측: 해준님 8/11 "500ep 2시간, 5000ep 하루")
+예산 (8/24 밤 실측)
 --------------------------------------------------------------------------
   eval 1셀 = LIBERO-10 x 50ep/task = 500ep ~= 2 GPU-h
-  학습 1잡 = 150k step               ~= 15 GPU-h
-  밤 12h x 6 GPU = 72 GPU-h -> 학습 2잡(24h) + eval 24셀(48h)
-
-  A = 학습 전용(2 GPU, 밤새 점유, 내일 오후 해금)
-  B = eval (짝수 index) | C = eval (홀수 index)  <- 둘 다 우선순위 높은 것부터
-  B/C 는 eval 큐가 마르면 학습 큐 꼬리를 집어간다(TRAIN_FALLBACK, 결정론적 슬라이스).
+  학습 1잡 = 150k step               ~=  8 GPU-h (4잡/2GPU/2배치 ≈ 16h 실측)
+  노드 역할은 suggest() 가 정한다: critical 학습이 노드를 먼저 선점하고,
+  나머지는 ready eval 큐를 포화시키고, 남으면 일반 학습.
 """
 import json
 import sys
@@ -71,7 +87,9 @@ USE_CHUNK_PAIRS = {"act": False, "carry": True, "bimamba": False, "bimos": True}
 REUSE_CKPT_OF = {"bimamba_cpoff": "bimos"}      # 학습 안 함 -> 이 변형의 ckpt 사용
 TRAINABLE = ("act", "carry", "bimamba", "bimos")
 
-K_ALL = [20, 50, 100, 150]
+# K=10/15 는 8/25 추가. 우리 최고 후보(BiMamba+TE 75.4/75.6)가 거기 있는데 스윕에서
+# 빠져 있었다 — 이길 가능성이 있는 유일한 절대값 지점을 안 재고 있었던 것.
+K_ALL = [10, 15, 20, 50, 100, 150]
 
 
 def _carry_flag(variant, on):
@@ -97,7 +115,7 @@ def tag_of(variant, K):
 
 
 def strides_for(K):
-    return [s for s in (1, 10, 25, 50, 75, 100, 150) if s <= K]
+    return [s for s in (1, 10, 15, 20, 25, 50, 75, 100, 150) if s <= K]
 
 
 # -- 부팅 / 태그 등록 --------------------------------------------------------
@@ -167,32 +185,42 @@ def _te_job(variant, K):
     }
 
 
+#  변형 풀. "bimamba"(순수)는 ckpt 가 생기는 대로 자동 편입된다(is_ready 게이트).
+_ALL_V = ("act", "bimamba", "bimamba_cpoff", "bimos", "carry")
+
+
 def _all_jobs():
-    """우선순위 = 이 리스트 순서. 앞쪽이 논문 그림을 직접 만든다."""
+    """우선순위 = 이 리스트 순서. 앞쪽이 W2(토너먼트) 판정 셀이다."""
     Q = []
-    # P1 -- TE 축: 크로스오버 K 찍기.  K=100 은 이미 있음(스킵됨) / K=50 이 핵심.
-    for K in (50, 100, 150, 20):
-        for v in ("act", "bimamba_cpoff", "bimos", "carry"):
+    # P1 -- TE 토너먼트 축.  K 순서 = 판정 가치 순:
+    #   20: act ckpt 있음 -> eval 하나로 오늘 판정 (BiMamba+TE 71.4 vs act+TE ?)
+    #   50: ckpt 있음 (64.1 vs ?)
+    #   10/15: 우리 최고 후보 75.4/75.6 의 자리 — act/pure ckpt 학습 후 자동 편입
+    #   100/150: 크로스오버 확인 (100 은 30.5/49.3 재검증)
+    for K in (20, 50, 10, 15, 100, 150):
+        vs = ("act", "bimamba") if K in (10, 15) else _ALL_V
+        for v in vs:
             Q.append(_te_job(v, K))
-    # P2 -- K=100 레짐 맵, 긴 stride 우선 (8/18 가설: BiMamba 는 긴 stride)
-    for s in (75, 50, 25):
-        for v in ("act", "carry", "bimamba_cpoff", "bimos"):
-            Q.append(_rm_job(v, 100, s))
-    # P3 -- K=50 레짐 맵 (8/18 가설: carry 는 짧은 stride)
-    for s in (50, 25, 10):
-        for v in ("act", "carry", "bimamba_cpoff", "bimos"):
+    # P2 -- K=50 단거리 레짐 행: ACT 최고점(67.6, s10)과 정면 승부 + carry 모순 해소
+    #   (8/17 수정표: carry 69.5 > ACT 61.1  vs  8/18 슬라이드: ACT 67.6 > carry 64.6
+    #    — 같은 세팅인데 두 표가 다르다. UBAI 에서 처음부터 재측정해 확정한다.)
+    for s in (10, 25):
+        for v in _ALL_V:
             Q.append(_rm_job(v, 50, s))
-    # P4 -- 순수 BiMamba (노드 A 가 학습 끝내면 여기서 자동으로 잡힌다)
-    for K, ss in ((100, (75, 50, 25)), (50, (50, 25, 10))):
-        for s in ss:
-            Q.append(_rm_job("bimamba", K, s))
-    # P5 -- 나머지 (여유 있을 때)
-    for s in (10, 100):
-        for v in ("act", "carry", "bimamba_cpoff", "bimos"):
+    # P3 -- K=100 레짐 맵, 긴 stride 우선 (W1: 긴 chunk 에서 ACT 붕괴 + 효율 주장)
+    for s in (75, 50, 25):
+        for v in _ALL_V:
             Q.append(_rm_job(v, 100, s))
-    for s in (150, 100, 50):
-        for v in ("act", "carry", "bimamba_cpoff", "bimos"):
-            Q.append(_rm_job(v, 150, s))
+    # P4 -- 나머지 K=50 / K=20 행
+    for K, ss in ((50, (50,)), (20, (10, 20))):
+        for s in ss:
+            for v in _ALL_V:
+                Q.append(_rm_job(v, K, s))
+    # P5 -- 잔여 (여유 있을 때)
+    for K, ss in ((100, (10, 100)), (150, (150, 100, 50))):
+        for s in ss:
+            for v in _ALL_V:
+                Q.append(_rm_job(v, K, s))
     seen, out = set(), []
     for j in Q:
         if j["out"] not in seen:
@@ -259,22 +287,38 @@ def eval_queue(only_ready=True, skip_done=True):
     return Q
 
 
-# 학습 우선순위 -- 앞의 2개가 오늘 밤 노드 A 몫.
-TRAIN_PRIORITY = [
-    ("bimamba", 100),   # 순수 BiMamba K=100. 헤드라인 주장의 오염 제거 (설계근거 3)
-    ("act",     150),   # ACT 붕괴 곡선 오른쪽 끝점 (K=50/100 은 이미 있음)
-    ("act",      20),   # 크로스오버 왼쪽 끝 (TE 축)
-    ("bimamba",  50),
-    ("bimos",   150),
-    ("carry",   150),
-    ("bimamba", 150),
-    ("act",      50),
-    ("carry",    20),
-    ("bimos",    20),
-    ("bimamba",  20),
-    ("carry",    50),
-    ("bimos",    50),
+# critical = W2(토너먼트) 판정에 필수인 학습. suggest() 가 eval 큐 깊이와 무관하게
+# 이 잡들에 노드를 선점시킨다. 전부 끝나면 자동으로 선점이 풀린다.
+CRITICAL_TRAIN_JOBS = [
+    ("act",     10),    # act+TE @ K=10 — 우리 75.4 의 직접 상대. 이 열이 비면 W2 주장 불가
+    ("act",     15),    # act+TE @ K=15 — 우리 75.6 의 직접 상대
+    ("bimamba", 10),    # 순수 BiMamba K=10 — 75.4 를 UBAI/순수판으로 재측정
+    ("bimamba", 15),
 ]
+
+# 학습 우선순위 -- critical 이 항상 앞. 이미 OK 인 태그는 train_queue() 에서 빠진다.
+TRAIN_PRIORITY = CRITICAL_TRAIN_JOBS + [
+    ("bimos",   10),    # 오염판 K=10/15 — 은지님 75.4/75.6 재현 대조용 (2차 배치)
+    ("bimos",   15),
+    ("bimamba", 20),    # 순수 K=20 (cpoff 프록시 71.4 의 순수판)
+    ("carry",   50),    # 40k 에서 중단 — resume
+    ("carry",   20),
+    ("bimamba", 100),   # 이하는 8/24 밤에 대부분 완료 — 남은 것만 잡힌다
+    ("act",    150),
+    ("act",     20),
+    ("bimamba", 50),
+    ("bimos",  150),
+    ("carry",  150),
+    ("bimamba", 150),
+    ("act",     50),
+    ("bimos",   20),
+    ("bimos",   50),
+]
+
+
+def critical_pending():
+    """아직 안 끝난 critical 학습 태그."""
+    return [tag_of(v, K) for v, K in CRITICAL_TRAIN_JOBS if not is_ready(tag_of(v, K))]
 
 
 def train_queue(verbose=False):
@@ -328,27 +372,31 @@ EVAL_NODE_ORDER = ("B", "C", "A")   # eval 을 먼저 배정받는 순서 (A 는
 def suggest(verbose=True):
     """인벤토리를 보고 노드 역할을 추천한다.
 
-    규칙: **ready eval 큐를 먼저 포화시키고, 남는 노드만 학습에 준다.**
-
-    한 노드(2 GPU)의 하룻밤 처리량은 eval ~12셀 vs 학습 2잡이다. 그런데 학습 2잡이
-    나중에 열어주는 eval 은 보통 몇 셀뿐이라, **지금 돌릴 수 있는 eval 이 쌓여 있으면
-    eval 이 거의 항상 이긴다.** 학습은 eval 큐가 얕을 때(= GPU 가 남을 때) 하는 일이다.
-    (2026-08-25 수정: 이전 규칙은 '학습 큐가 비지 않으면 A=학습' 이라 ready eval 61셀 /
-     남은 학습 3잡인 상황에서도 계속 A 를 학습으로 보냈다.)
+    규칙 (8/25 재설계):
+    1. **critical 학습이 노드를 먼저 선점한다.** W2(토너먼트) 판정에 필수인 ckpt
+       (act/pure @ K=10/15)는 eval 큐가 아무리 깊어도 학습 노드를 확보한다 —
+       판정 셀을 여는 학습은 큐 소화보다 가치가 높다. 전부 끝나면 선점이 풀린다.
+    2. 남는 노드는 **ready eval 큐를 포화**시킨다.
+    3. 그래도 남으면 일반 학습.
     """
     n_ev, n_tr = len(eval_queue()), len(train_queue())
+    crit = critical_pending()
+    reserve = min(len(NODES), -(-len(crit) // TRAIN_JOBS_PER_NODE)) if crit else 0
     if n_tr == 0:
         n_eval_nodes = len(NODES)                      # 학습할 게 없으면 전부 eval
     elif n_ev == 0:
         n_eval_nodes = 0                               # 돌릴 eval 이 없으면 전부 학습
     else:
         n_eval_nodes = min(len(NODES), -(-n_ev // EVAL_CELLS_PER_NODE))
+    n_eval_nodes = min(n_eval_nodes, len(NODES) - reserve)     # critical 선점분 제외
     roles = {n: "train" for n in NODES}
     for n in EVAL_NODE_ORDER[:n_eval_nodes]:
         roles[n] = "eval"
     if verbose:
         cap = n_eval_nodes * EVAL_CELLS_PER_NODE
         print(f"ready eval 큐 {n_ev}셀 (노드당 하룻밤 ≈ {EVAL_CELLS_PER_NODE}셀) / 학습 대기 {n_tr}잡")
+        if crit:
+            print(f"  critical 학습 {len(crit)}잡 -> 노드 {reserve}대 선점: {crit}")
         print(f"  -> eval 노드 {n_eval_nodes}대(처리량 {cap}셀) / 학습 노드 {len(NODES) - n_eval_nodes}대")
         print(f"추천 역할: {roles}")
         changed = {n: r for n, r in roles.items() if r != NODE_ROLE[n]}
@@ -525,10 +573,14 @@ def te_table():
             df[v + "-act"] = (df[v] - df["act"]).round(1)
     print(f"== TE 축 (stride=1, coeff=0.01, {N_EP}ep/task, seed{SEED}) ==")
     print(df.to_string(index=False))
-    print("\n참고(이미 측정된 값 — 슬라이드 88 / 은지님 K sweep):")
+    print("\n참고(은지님 환경 측정값 — cpoff 계열, UBAI 재측정과 별도 표기할 것):")
+    print("  K= 10   ACT+TE   ?    BiMamba+TE 75.4   <- 우리 최고 후보")
+    print("  K= 15   ACT+TE   ?    BiMamba+TE 75.6   <- 우리 최고 후보")
+    print("  K= 20   ACT+TE   ?    BiMamba+TE 71.4   (ACT best 67.6 은 K=50 s10 TE-off)")
     print("  K= 50   ACT+TE   ?    BiMamba+TE 64.1")
     print("  K=100   ACT+TE 30.5   BiMamba+TE 49.3   (+18.8)")
     print("  K=150   ACT+TE   ?    BiMamba+TE 26.8")
+    print("판정: max(ours) > max(ACT+TE 포함 ACT 전열) 이면 토너먼트(W2) 승리.")
     return df
 
 
