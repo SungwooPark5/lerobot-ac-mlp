@@ -17,13 +17,26 @@
       우리 best 후보만 골라 놓고 ACT 는 한 세팅만 재면 체리피킹이라 리뷰에서 깨진다.
 
 W2 의 판정 셀 = act+TE @ K=10/15/20. 우리 최고 후보(BiMamba+TE 75.4/75.6/71.4,
-은지님 K sweep)가 전부 짧은 K 에 있는데, 그 K 들의 act+TE 열이 통째로 비어 있다.
-K=20 은 act ckpt 가 있어 **eval 하나로 오늘 판정**된다. K=10/15 는 학습이 필요하다
-(critical — suggest() 가 eval 큐 깊이와 무관하게 노드를 선점시킨다).
+은지님 K sweep)가 전부 짧은 K 에 있는데, 그 K 들의 act+TE 열이 통째로 비어 있었다.
 
-리스크: 짧은 K + TE 는 LIBERO 표준 세팅(= ACT 홈그라운드)이다. act+TE 가 다 이기면
-W2 는 없다. 그 경우 폴백 = W1(긴 chunk 크로스오버 + 효율) + real-world(SO-101).
-어느 쪽이든 내일이면 판정된다.
+[8/25 오후 판정] exp3_act_te_ksweep 이 act+TE 열을 채웠다 (ak{K}_te 태그, 100ep/task,
+seed0, 동일 UBAI). act_k10/15 는 이미 학습돼 있었다:
+
+    K        10    15    20    50   100   150
+    act+TE  72.5  67.3  61.2  39.7  27.7  21.9   <- K 에 대해 단조 붕괴
+    bimamba 75.4  75.6  71.4  64.1  49.3  26.8   (cpoff)
+    +carry  74.3  76.4  71.9  63.6  50.2  27.1   (cpoff)
+
+전 K 에서 우리가 위. max(ours)=76.4(K=15) vs max(ACT)=72.5(K=10) -> 100ep 기준 W2 승리.
+남은 확정 작업 2개:
+  (1) K=10/15/20 을 500ep 로 재측정 — bimamba 쪽이 n=100(SE ±4.3)이라 K=10/15 마진
+      (+2.9/+9.1)이 오차 안이다. 이 파일의 te_* 셀이 그 확정 런이다 (exp3 는 ak{K}_te
+      태그로 저장돼 exp5 가 te_* 로 다시 돈다 — 중복이 아니라 n 업그레이드).
+  (2) 순수 bimamba K=10/15 학습+측정 — 현재 bimamba 값은 carry-학습 오염판(cpoff).
+      critical 은 이제 이 2잡뿐이다 (act_k10/15 는 is_ready 로 자동 이탈).
+
+잔존 리스크: 500ep 에서 K=10/15 마진이 뒤집히면 K=20/50 마진(+10.2/+24.4)으로 후퇴,
+그것도 흔들리면 폴백 = W1(긴 chunk 크로스오버 + 효율) + real-world(SO-101).
 
 --------------------------------------------------------------------------
 설계 근거 3가지
@@ -41,6 +54,13 @@ W2 는 없다. 그 경우 폴백 = W1(긴 chunk 크로스오버 + 효율) + real
    학습됐다(은지님 8/18 지적). 순수판 `bimamba_pure` 는 8/24 밤에 K=50/100/150 학습 완료.
    오염된 프록시는 `bimamba_cpoff` 라벨로 표에 그대로 남긴다. 은지님의 75.4(K=10)는
    은지님 환경 + 오염판 값이므로, UBAI 에서 순수판으로 재측정해야 논문에 쓴다.
+
+4. 8/18 stride sweep 슬라이드는 aloha 가 섞였다 — 은지님 8/24 확인: "76 까지 나온 건
+   libero 에는 없다, 67.6 이 최고". libero/aloha 슬라이드의 s=10/50/75 행이 동일하다.
+   따라서 ACT 76.0(K=100 s50), BiMamba 75.0(K=100 s75) 등은 libero 근거로 못 쓰고,
+   교차검증된 libero 행은 K=100 s=100 하나뿐(ACT 18.8 / ACM2 25.3 / BiMamba 31.9 /
+   BiMOS 25.6). ACT 의 진짜 libero 최고 = 67.6(K=50 s10, TE off).
+   -> 이 파일의 레짐 맵(rm_* 셀)이 그 실험을 UBAI 에서 처음부터 재구현하는 것이다.
 
 --------------------------------------------------------------------------
 예산 (8/24 밤 실측)
@@ -192,18 +212,18 @@ _ALL_V = ("act", "bimamba", "bimamba_cpoff", "bimos", "carry")
 def _all_jobs():
     """우선순위 = 이 리스트 순서. 앞쪽이 W2(토너먼트) 판정 셀이다."""
     Q = []
-    # P1 -- TE 토너먼트 축.  K 순서 = 판정 가치 순:
-    #   20: act ckpt 있음 -> eval 하나로 오늘 판정 (BiMamba+TE 71.4 vs act+TE ?)
-    #   50: ckpt 있음 (64.1 vs ?)
-    #   10/15: 우리 최고 후보 75.4/75.6 의 자리 — act/pure ckpt 학습 후 자동 편입
-    #   100/150: 크로스오버 확인 (100 은 30.5/49.3 재검증)
-    for K in (20, 50, 10, 15, 100, 150):
+    # P1 -- TE 토너먼트 축, 500ep 확정 런. act+TE 는 8/25 exp3(100ep)로 이미 측정됨:
+    #   72.5/67.3/61.2/39.7/27.7/21.9 (K=10..150) — 전 K 에서 우리가 위.
+    #   K 순서 = 마진이 얇아 500ep 확정이 급한 순: 10(+2.9), 15(+9.1이지만 max 자리),
+    #   20(+10.2), 50, 100, 150. te_bimamba_*(순수)는 pure ckpt 가 생기는 대로 편입.
+    for K in (10, 15, 20, 50, 100, 150):
         vs = ("act", "bimamba") if K in (10, 15) else _ALL_V
         for v in vs:
             Q.append(_te_job(v, K))
     # P2 -- K=50 단거리 레짐 행: ACT 최고점(67.6, s10)과 정면 승부 + carry 모순 해소
     #   (8/17 수정표: carry 69.5 > ACT 61.1  vs  8/18 슬라이드: ACT 67.6 > carry 64.6
-    #    — 같은 세팅인데 두 표가 다르다. UBAI 에서 처음부터 재측정해 확정한다.)
+    #    — 같은 세팅인데 두 표가 다르고, 슬라이드 stride 행들은 aloha 오염 가능성까지
+    #    확인됐다(설계근거 4). UBAI 재측정 값만 논문에 쓴다.)
     for s in (10, 25):
         for v in _ALL_V:
             Q.append(_rm_job(v, 50, s))
@@ -289,11 +309,13 @@ def eval_queue(only_ready=True, skip_done=True):
 
 # critical = W2(토너먼트) 판정에 필수인 학습. suggest() 가 eval 큐 깊이와 무관하게
 # 이 잡들에 노드를 선점시킨다. 전부 끝나면 자동으로 선점이 풀린다.
+# 8/25 오후: act_k10/15 는 이미 학습돼 있었음이 확인됐다(exp3 학습 셀 전부 skip)
+# -> is_ready 로 자동 이탈, 실질 critical = 순수 bimamba 2잡.
 CRITICAL_TRAIN_JOBS = [
-    ("act",     10),    # act+TE @ K=10 — 우리 75.4 의 직접 상대. 이 열이 비면 W2 주장 불가
-    ("act",     15),    # act+TE @ K=15 — 우리 75.6 의 직접 상대
+    ("act",     10),    # 이미 OK — 자동 이탈
+    ("act",     15),    # 이미 OK — 자동 이탈
     ("bimamba", 10),    # 순수 BiMamba K=10 — 75.4 를 UBAI/순수판으로 재측정
-    ("bimamba", 15),
+    ("bimamba", 15),    # 순수 BiMamba K=15 — 76.4(전체 최고) 자리의 순수판
 ]
 
 # 학습 우선순위 -- critical 이 항상 앞. 이미 OK 인 태그는 train_queue() 에서 빠진다.
@@ -573,14 +595,13 @@ def te_table():
             df[v + "-act"] = (df[v] - df["act"]).round(1)
     print(f"== TE 축 (stride=1, coeff=0.01, {N_EP}ep/task, seed{SEED}) ==")
     print(df.to_string(index=False))
-    print("\n참고(은지님 환경 측정값 — cpoff 계열, UBAI 재측정과 별도 표기할 것):")
-    print("  K= 10   ACT+TE   ?    BiMamba+TE 75.4   <- 우리 최고 후보")
-    print("  K= 15   ACT+TE   ?    BiMamba+TE 75.6   <- 우리 최고 후보")
-    print("  K= 20   ACT+TE   ?    BiMamba+TE 71.4   (ACT best 67.6 은 K=50 s10 TE-off)")
-    print("  K= 50   ACT+TE   ?    BiMamba+TE 64.1")
-    print("  K=100   ACT+TE 30.5   BiMamba+TE 49.3   (+18.8)")
-    print("  K=150   ACT+TE   ?    BiMamba+TE 26.8")
-    print("판정: max(ours) > max(ACT+TE 포함 ACT 전열) 이면 토너먼트(W2) 승리.")
+    print("\n참고 — 8/25 exp3 측정(ak{K}_te, 100ep/task, cpoff 계열):")
+    print("  K        10    15    20    50   100   150")
+    print("  act+TE  72.5  67.3  61.2  39.7  27.7  21.9")
+    print("  bimamba 75.4  75.6  71.4  64.1  49.3  26.8")
+    print("  +carry  74.3  76.4  71.9  63.6  50.2  27.1")
+    print("100ep 기준 max(ours)=76.4(K=15) vs max(ACT)=72.5(K=10) — W2 승리.")
+    print("위의 te_* 500ep 값이 이걸 확정/대체한다. ACT TE-off 최고는 67.6(K=50 s10).")
     return df
 
 
