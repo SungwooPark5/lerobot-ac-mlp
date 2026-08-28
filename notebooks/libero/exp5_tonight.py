@@ -457,58 +457,88 @@ def suggest(verbose=True):
     return roles
 
 
+# ── 정적 분할 ────────────────────────────────────────────────────────────────
+# 노드별 몫을 **인벤토리와 무관한 고정 목록**에서 나눈다(_all_jobs / _all_train_tags 는
+# ckpt 상태를 안 본다). 그래야 학습이 끝나 큐가 줄어도 노드 간 배정이 흔들리지 않는다.
+#   이전 방식(= 매번 만든 ready 큐를 index 로 나누기)은 A 의 학습이 끝나 셀이 ready 로
+#   편입되는 순간 B/C 의 index 가 밀려 **두 노드가 같은 셀을 동시에 돌 수 있었다**
+#   (같은 out_dir 에 두 프로세스가 써서 결과가 깨진다).
+def _node_index(node):
+    node = node.strip().upper()
+    return NODES.index(node) if node in NODES else 0
+
+
+def _all_train_tags():
+    """학습 대상 전체 태그의 결정론적 순서(ckpt 상태 무관). TRAIN_PRIORITY 먼저, 나머지는 정렬."""
+    out, seen = [], set()
+    for variant, K in TRAIN_PRIORITY:
+        t = tag_of(variant, K)
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    rest = []
+    for variant in TRAINABLE:
+        for K in K_ALL:
+            t = tag_of(variant, K)
+            if t not in seen:
+                seen.add(t)
+                rest.append(t)
+    return out + sorted(rest)
+
+
 def node_eval_jobs(node):
-    """eval 노드들이 우선순위 큐를 번갈아(round-robin) 나눠 갖는다 -> 둘 다 상위부터 돈다."""
-    node = node.strip().upper()
-    ev_nodes = _nodes_with("eval")
-    if node not in ev_nodes:
-        return []
-    i, k = ev_nodes.index(node), len(ev_nodes)
-    return eval_queue()[i::k]
+    """이 노드 몫의 eval 셀 — 고정 분할 후 (ckpt 있음 & 미완료) 만 남긴다."""
+    i, k = _node_index(node), len(NODES)
+    mine = _all_jobs()[i::k]
+    return [j for j in mine if is_ready(j["src"]) and not _eval_done(j)]
 
 
-def node_train_tags(node):
-    """학습 노드들이 학습 큐를 2잡씩 순서대로 나눠 갖는다. eval 노드는 폴백 슬라이스."""
-    node = node.strip().upper()
-    q = train_queue()
-    tr_nodes = _nodes_with("train")
-    if node in tr_nodes:
-        i = tr_nodes.index(node) * TRAIN_JOBS_PER_NODE
-        return q[i:i + TRAIN_JOBS_PER_NODE]
-    # eval 노드의 폴백: 학습 노드들이 가져간 뒤쪽에서 집는다(겹침 없음)
-    base = len(tr_nodes) * TRAIN_JOBS_PER_NODE
-    ev_nodes = _nodes_with("eval")
-    i = base + (ev_nodes.index(node) if node in ev_nodes else 0) * TRAIN_JOBS_PER_NODE
-    return q[i:i + TRAIN_JOBS_PER_NODE]
+def node_train_tags(node, limit=TRAIN_JOBS_PER_NODE):
+    """이 노드 몫의 학습 태그 — 고정 분할 후 아직 안 된 것(MISS/PART)만.
+
+    limit: 한 배치 크기(기본 = GPU 수). **limit=None 이면 남은 전부**.
+    """
+    i, k = _node_index(node), len(NODES)
+    mine = [t for t in _all_train_tags()[i::k] if not is_ready(t)]
+    return mine if limit is None else mine[:limit]
+
+
+def node_blocked_evals(node):
+    """이 노드 몫 중 **다른 노드가 학습 중이라** 아직 못 도는 셀 수."""
+    i, k = _node_index(node), len(NODES)
+    return sum(1 for j in _all_jobs()[i::k]
+               if not is_ready(j["src"]) and not _eval_done(j))
 
 
 def plan(node, gpus=None, verbose=True):
-    """이 노드가 오늘 밤 할 일. 실행 전에 반드시 눈으로 확인할 것."""
+    """이 노드 몫 전체. 역할 구분 없이 **학습 먼저, 그 다음 eval** 로 다 돈다."""
     node = node.strip().upper()
     gpus = list(gpus) if gpus else v23.available_gpus()
-    ev, tr = node_eval_jobs(node), node_train_tags(node)
+    ev = node_eval_jobs(node)
+    tr_now = node_train_tags(node)                 # 이번 배치(2잡)
+    tr_all = node_train_tags(node, limit=None)     # 이 노드가 끝까지 해야 할 전부
+    blocked = node_blocked_evals(node)
     if verbose:
-        print(f"===== NODE {node} ({role_of(node)})  GPU {gpus} =====")
-        if role_of(node) == "train":
-            print(f"\n[학습] {len(tr)}잡 x ~15h  (밤새 점유, 내일 오후 완료)")
-            for t in tr:
-                st = ckpt_step(t)
-                print(f"   {t:<24} {'resume @' + format(st, ',') if st else '새로 시작'}")
-            print("\n  -- 전체 학습 큐 --")
-            train_queue(verbose=True)
-        else:
-            hrs = 2 * len(ev) / max(1, len(gpus))
-            print(f"\n[eval] {len(ev)}셀 x ~2 GPU-h -> GPU {len(gpus)}대로 ~{hrs:.0f}시간")
-            for i, j in enumerate(ev):
-                mark = "  <- 오늘 밤" if i < EVAL_CELLS_PER_NODE else ""
-                print(f"   {i + 1:>2}. {j['out']:<28} <- {j['src']:<18} "
-                      f"{' '.join(j['flags'])}{mark}")
-            if hrs > 12:
-                print(f"\n  ※ 12시간을 넘는다. 앞에서부터 도니까 아침에 같은 셀을 다시 실행하면"
-                      f" 완료분은 skip 되고 남은 {len(ev) - EVAL_CELLS_PER_NODE}셀부터 이어서 돈다.")
-            if tr:
-                print(f"\n[폴백 학습] eval 큐가 마르면(만): {tr}")
-    return {"node": node, "gpus": gpus, "eval": ev, "train": tr}
+        print(f"===== NODE {node}  GPU {gpus} =====")
+        print(f"\n[학습] 남은 {len(tr_all)}잡 x ~8h  (이번 배치 {len(tr_now)}잡)")
+        for t in tr_all:
+            st = ckpt_step(t)
+            mark = "  <- 이번 배치" if t in tr_now else ""
+            print(f"   {t:<24} {'resume @' + format(st, ',') if st else '새로 시작':<18}{mark}")
+        hrs_t = 8 * len(tr_all) / max(1, len(gpus))
+        hrs_e = 2 * len(ev) / max(1, len(gpus))
+        print(f"\n[eval] 지금 돌 수 있는 {len(ev)}셀 x ~2 GPU-h -> GPU {len(gpus)}대로 ~{hrs_e:.0f}시간")
+        for i, j in enumerate(ev[:15]):
+            print(f"   {i + 1:>2}. {j['out']:<28} <- {j['src']:<18} {' '.join(j['flags'])}")
+        if len(ev) > 15:
+            print(f"   ... 외 {len(ev) - 15}셀")
+        if blocked:
+            print(f"\n   ※ {blocked}셀은 아직 ckpt 가 없어 대기 중(내 학습분 + 다른 노드 학습분). "
+                  f"학습이 끝나는 대로 자동 편입된다.")
+        print(f"\n[총 예상] 학습 ~{hrs_t:.0f}h + eval ~{hrs_e:.0f}h "
+              f"= ~{hrs_t + hrs_e:.0f}h (대기분 {blocked}셀 별도)")
+    return {"node": node, "gpus": gpus, "eval": ev,
+            "train": tr_now, "train_all": tr_all, "blocked": blocked}
 
 
 # -- 실행 --------------------------------------------------------------------
@@ -550,6 +580,65 @@ def run_trains(tags, gpus, dry=False):
             print(f"[{t}]\n  {v23.make_train_cmd(t, SEED, TASK, gpu_id=gpus[0])}\n")
         return jobs
     return cf.run_training_jobs(jobs, gpus, prefetch_task=TASK)
+
+
+def run_trains_all(node, gpus=None, max_rounds=20, dry=False):
+    """[학습 셀] 이 노드 몫에서 **아직 안 된 학습을 전부** 돈다 (GPU 수만큼 배치로).
+
+    이미 150k 인 태그는 run_training_jobs 가 skip 하고, 중단된 것(PART)은 resume 한다.
+    배치마다 인벤토리를 다시 읽으므로 중간에 멈췄다가 재실행해도 이어서 간다.
+    """
+    node = node.strip().upper()
+    gpus = list(gpus) if gpus else v23.available_gpus()
+    todo = node_train_tags(node, limit=None)
+    if not todo:
+        print(f"[{node}] 학습할 것 없음 — 이 노드 몫은 전부 학습돼 있다.")
+        return []
+    print(f"[{node}] 학습 대기 {len(todo)}잡: {todo}\n"
+          f"        GPU {gpus} 로 {TRAIN_JOBS_PER_NODE}잡씩, 잡당 ~8h "
+          f"(총 ~{8 * len(todo) / max(1, len(gpus)):.0f}h)")
+    done = []
+    for rnd in range(1, max_rounds + 1):
+        batch = node_train_tags(node)
+        if not batch:
+            break
+        print(f"\n----- [{node}] 학습 배치 {rnd} : {batch} -----")
+        run_trains(batch, gpus, dry=dry)
+        done += batch
+        if dry:
+            break
+    if not dry:
+        left = node_train_tags(node, limit=None)
+        print(f"\n[{node}] 학습 종료. 남은 것: {left if left else '없음 ✅'}")
+    return done
+
+
+def run_evals_all(node, gpus=None, max_rounds=6, dry=False):
+    """[eval 셀] 이 노드 몫에서 **지금 돌 수 있는 eval 을 전부** 주르륵 돈다.
+
+    한 바퀴 끝나면 인벤토리를 다시 읽는다 — 그 사이 다른 노드가 학습을 끝냈으면
+    막혀 있던 셀이 자동으로 편입돼 이어서 돈다. 완료분은 항상 skip.
+    """
+    node = node.strip().upper()
+    gpus = list(gpus) if gpus else v23.available_gpus()
+    total = 0
+    for rnd in range(1, max_rounds + 1):
+        jobs = node_eval_jobs(node)
+        if not jobs:
+            break
+        print(f"\n----- [{node}] eval 바퀴 {rnd} : {len(jobs)}셀 "
+              f"(~{2 * len(jobs) / max(1, len(gpus)):.0f}h) -----")
+        run_evals(jobs, gpus, dry=dry)
+        total += len(jobs)
+        if dry:
+            return total
+    blocked = node_blocked_evals(node)
+    if blocked:
+        print(f"\n[{node}] 돌 수 있는 건 다 돌았다. 남은 {blocked}셀은 아직 ckpt 가 없다"
+              f"(다른 노드가 학습 중). 그 노드가 끝난 뒤 이 셀을 다시 실행하면 이어서 돈다.")
+    else:
+        print(f"\n[{node}] ✅ 이 노드 몫 eval 전부 완료.")
+    return total
 
 
 def preflight(gpu=0, n_ep=5):
