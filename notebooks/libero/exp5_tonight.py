@@ -96,6 +96,7 @@ TE_FLAGS = ["--policy.temporal_ensemble_coeff=0.01", "--policy.n_action_steps=1"
 #   (ACT 에 --policy.sscp_* 를 주면 파싱 에러로 죽기 때문에 정책별로 갈라야 한다).
 VARIANTS = {
     "act":           ("act",          "act",                       False, "ACT"),
+    "acm2":          ("acm2",         "acm2",                      False, "ACM2 (plain)"),
     "carry":         ("acm2_carry",   "acm2_sscp_literal",         True,  "carry only"),
     "bimamba":       ("bimamba_pure", "acm2_sscp_literal_bimamba", False, "BiMamba only (pure)"),
     "bimos":         ("bimamba",      "acm2_sscp_literal_bimamba", True,  "BiMamba + carry"),
@@ -103,9 +104,11 @@ VARIANTS = {
     "bimamba_cpoff": ("bimamba",      None,                        None,  "BiMamba (chunk-pair trained!)"),
 }
 #  변형 -> use_chunk_pairs (학습 시). 순수 BiMamba 는 False 여야 한다.
-USE_CHUNK_PAIRS = {"act": False, "carry": True, "bimamba": False, "bimos": True}
+USE_CHUNK_PAIRS = {"act": False, "acm2": False, "carry": True, "bimamba": False, "bimos": True}
 REUSE_CKPT_OF = {"bimamba_cpoff": "bimos"}      # 학습 안 함 -> 이 변형의 ckpt 사용
-TRAINABLE = ("act", "carry", "bimamba", "bimos")
+TRAINABLE = ("act", "acm2", "carry", "bimamba", "bimos")
+#  sscp 플래그를 못 받는 정책(파싱 에러로 죽는다). ACT 와 plain ACM2.
+NO_SSCP_FLAG = ("act", "acm2")
 
 # K=10/15 는 8/25 추가. 우리 최고 후보(BiMamba+TE 75.4/75.6)가 거기 있는데 스윕에서
 # 빠져 있었다 — 이길 가능성이 있는 유일한 절대값 지점을 안 재고 있었던 것.
@@ -113,8 +116,8 @@ K_ALL = [10, 15, 20, 50, 100, 150]
 
 
 def _carry_flag(variant, on):
-    """정책별로 유효한 플래그만. ACT 에는 sscp 플래그 자체가 없다."""
-    if variant == "act":
+    """정책별로 유효한 플래그만. ACT / plain ACM2 에는 sscp 플래그 자체가 없다."""
+    if variant in NO_SSCP_FLAG:
         return []
     return [v23._CARRY_ON if on else v23._CARRY_OFF]
 
@@ -134,8 +137,14 @@ def tag_of(variant, K):
     return base if K == 100 else f"{base}_k{K}"
 
 
+#  실행 stride 격자. 8/25 K=100 결과에서 s10 이 봉우리(BiMamba 65.0 vs ACT 42.5)인데
+#  s5 / s15 / s25 가 비어 있어 봉우리를 감싸지 못했다 -> 5 와 15 를 추가.
 def strides_for(K):
-    return [s for s in (1, 10, 15, 20, 25, 50, 75, 100, 150) if s <= K]
+    return [s for s in (1, 5, 10, 15, 20, 25, 50, 75, 100, 150) if s <= K]
+
+
+# stride sweep 우선순위: 봉우리(10) 양옆부터. 이미 측정된 10/50/100 은 skip 로직이 거른다.
+STRIDE_SWEEP_ORDER = (5, 15, 25, 10, 50, 75, 1, 100)
 
 
 # -- 부팅 / 태그 등록 --------------------------------------------------------
@@ -206,39 +215,46 @@ def _te_job(variant, K):
 
 
 #  변형 풀. "bimamba"(순수)는 ckpt 가 생기는 대로 자동 편입된다(is_ready 게이트).
-_ALL_V = ("act", "bimamba", "bimamba_cpoff", "bimos", "carry")
+#  은지님 8/24 지정: "세팅 바꿀 때마다 act, bimamba only, carry only, bimos 다 돌려야".
+#  거기에 plain ACM2 를 더한다 — 8/25 표의 기준선이고 스캔 ablation 의 분모다.
+_ALL_V = ("act", "acm2", "bimamba", "bimamba_cpoff", "bimos", "carry")
+MAIN_K = 100          # stride sweep 의 주 chunk. 8/25 에 여기서 +22.5 가 나왔다.
+MAIN_STRIDE = 10      # 그 봉우리. K sweep 은 이 stride 로 고정해서 축을 하나만 움직인다.
 
 
 def _all_jobs():
-    """우선순위 = 이 리스트 순서. 앞쪽이 W2(토너먼트) 판정 셀이다."""
+    """우선순위 = 이 리스트 순서. 앞쪽이 stride sweep(8/25 해준님이 은지님께 약속한 것)."""
     Q = []
-    # P1 -- TE 토너먼트 축, 500ep 확정 런. act+TE 는 8/25 exp3(100ep)로 이미 측정됨:
-    #   72.5/67.3/61.2/39.7/27.7/21.9 (K=10..150) — 전 K 에서 우리가 위.
-    #   K 순서 = 마진이 얇아 500ep 확정이 급한 순: 10(+2.9), 15(+9.1이지만 max 자리),
-    #   20(+10.2), 50, 100, 150. te_bimamba_*(순수)는 pure ckpt 가 생기는 대로 편입.
-    for K in (10, 15, 20, 50, 100, 150):
-        vs = ("act", "bimamba") if K in (10, 15) else _ALL_V
-        for v in vs:
-            Q.append(_te_job(v, K))
-    # P2 -- K=50 단거리 레짐 행: ACT 최고점(67.6, s10)과 정면 승부 + carry 모순 해소
-    #   (8/17 수정표: carry 69.5 > ACT 61.1  vs  8/18 슬라이드: ACT 67.6 > carry 64.6
-    #    — 같은 세팅인데 두 표가 다르고, 슬라이드 stride 행들은 aloha 오염 가능성까지
-    #    확인됐다(설계근거 4). UBAI 재측정 값만 논문에 쓴다.)
-    for s in (10, 25):
+    # P1 -- ★ K=100 stride sweep. 8/25 결과가 s10 에서 봉우리인데(BiMamba 65.0 vs
+    #   ACT 42.5 = +22.5, n=500) 양옆 s5/s15/s25 가 비어 봉우리를 감싸지 못했다.
+    #   ACT 도 s10 근처가 최적일 가능성이 크므로(K=50 에서 s1 47.3 < s10 67.6),
+    #   여기서 우리가 전 stride 를 지배하는지가 "동일 추론 비용 우위"의 근거가 된다.
+    #   이미 측정된 s10/50/100 은 _eval_done 이 자동으로 건너뛴다.
+    for s in STRIDE_SWEEP_ORDER:
+        for v in _ALL_V:
+            Q.append(_rm_job(v, MAIN_K, s))
+    # P2 -- K sweep @ stride 10 고정. 메인 그림(= 교수님의 "ACT 가 무너지는 지점").
+    #   현재 이 축에 K=50(ACT 67.6 / BiMamba 57.8) 과 K=100(42.5 / 65.0) 두 점뿐이라
+    #   크로스오버가 50~100 사이라는 것만 알고 곡선이 없다. ACT ckpt 는 전 K 에 있으므로
+    #   재학습 없이 eval 만으로 채워진다.
+    for K in (150, 20, 15, 10, 50):
+        for v in _ALL_V:
+            Q.append(_rm_job(v, K, MAIN_STRIDE))
+    # P3 -- K=50 stride sweep: ACT 최고점(67.6, s10) 재현 + carry 모순 해소
+    #   (8/17 수정표 carry 69.5 > ACT 61.1  vs  8/18 슬라이드 ACT 67.6 > carry 64.6.
+    #    슬라이드 stride 행은 aloha 오염 가능성까지 있다(설계근거 4) -> UBAI 로 재측정.)
+    for s in (25, 5, 50, 15, 1):
         for v in _ALL_V:
             Q.append(_rm_job(v, 50, s))
-    # P3 -- K=100 레짐 맵, 긴 stride 우선 (W1: 긴 chunk 에서 ACT 붕괴 + 효율 주장)
-    for s in (75, 50, 25):
+    # P4 -- TE 축 500ep 확정 런. act+TE 는 8/25 exp3(100ep)로 이미 측정됨
+    #   (72.5/67.3/61.2/39.7/27.7/21.9) — 전 K 에서 우리가 위지만 n=100 이라 마진이
+    #   오차 안이다. 단 K=100 에선 TE(stride 1) 49.3 < s10 무TE 65.0 이므로 메인은 P1/P2.
+    for K in (15, 10, 20, 50, 100, 150):
         for v in _ALL_V:
-            Q.append(_rm_job(v, 100, s))
-    # P4 -- 나머지 K=50 / K=20 행
-    for K, ss in ((50, (50,)), (20, (10, 20))):
-        for s in ss:
-            for v in _ALL_V:
-                Q.append(_rm_job(v, K, s))
-    # P5 -- 잔여 (여유 있을 때)
-    for K, ss in ((100, (10, 100)), (150, (150, 100, 50))):
-        for s in ss:
+            Q.append(_te_job(v, K))
+    # P5 -- 잔여 격자 (여유 있을 때)
+    for K in (20, 150):
+        for s in strides_for(K):
             for v in _ALL_V:
                 Q.append(_rm_job(v, K, s))
     seen, out = set(), []
@@ -312,29 +328,34 @@ def eval_queue(only_ready=True, skip_done=True):
 # 8/25 오후: act_k10/15 는 이미 학습돼 있었음이 확인됐다(exp3 학습 셀 전부 skip)
 # -> is_ready 로 자동 이탈, 실질 critical = 순수 bimamba 2잡.
 CRITICAL_TRAIN_JOBS = [
-    ("act",     10),    # 이미 OK — 자동 이탈
-    ("act",     15),    # 이미 OK — 자동 이탈
+    ("acm2",    100),   # P1 stride sweep 의 ACM2 열 전체(8셀)를 막는다. 스캔 ablation 의 분모
     ("bimamba", 10),    # 순수 BiMamba K=10 — 75.4 를 UBAI/순수판으로 재측정
     ("bimamba", 15),    # 순수 BiMamba K=15 — 76.4(전체 최고) 자리의 순수판
 ]
 
 # 학습 우선순위 -- critical 이 항상 앞. 이미 OK 인 태그는 train_queue() 에서 빠진다.
+# P2(K sweep @ s10) 를 채우는 순서로: 곡선의 양 끝(150, 20) -> 짧은 K.
 TRAIN_PRIORITY = CRITICAL_TRAIN_JOBS + [
-    ("bimos",   10),    # 오염판 K=10/15 — 은지님 75.4/75.6 재현 대조용 (2차 배치)
-    ("bimos",   15),
-    ("bimamba", 20),    # 순수 K=20 (cpoff 프록시 71.4 의 순수판)
-    ("carry",   50),    # 40k 에서 중단 — resume
-    ("carry",   20),
+    ("acm2",    150),   # K sweep 열 채우기
+    ("acm2",     20),
+    ("acm2",     50),
+    ("acm2",     10),
+    ("acm2",     15),
+    ("carry",    50),   # 40k 에서 중단 — resume
+    ("carry",   150),
+    ("carry",    20),
+    ("bimamba",  20),   # 순수 K=20 (cpoff 프록시 71.4 의 순수판)
+    ("bimos",    10),   # 오염판 K=10/15 — 은지님 75.4/75.6 재현 대조용
+    ("bimos",    15),
     ("bimamba", 100),   # 이하는 8/24 밤에 대부분 완료 — 남은 것만 잡힌다
-    ("act",    150),
-    ("act",     20),
-    ("bimamba", 50),
-    ("bimos",  150),
-    ("carry",  150),
+    ("act",     150),
+    ("act",      20),
+    ("bimamba",  50),
+    ("bimos",   150),
     ("bimamba", 150),
-    ("act",     50),
-    ("bimos",   20),
-    ("bimos",   50),
+    ("act",      50),
+    ("bimos",    20),
+    ("bimos",    50),
 ]
 
 
@@ -404,6 +425,11 @@ def suggest(verbose=True):
     n_ev, n_tr = len(eval_queue()), len(train_queue())
     crit = critical_pending()
     reserve = min(len(NODES), -(-len(crit) // TRAIN_JOBS_PER_NODE)) if crit else 0
+    # 단, 돌릴 eval 이 이미 넉넉하면 선점은 1노드까지만. (8/28: stride sweep 으로 ready
+    # 큐가 150셀인데 critical 3잡이 2노드를 가져가 eval 이 1노드로 굶던 것을 고침.
+    # 막힌 열은 1노드가 밤새 2잡씩 흘려보내면 따라잡힌다.)
+    if reserve > 1 and n_ev >= 2 * EVAL_CELLS_PER_NODE:
+        reserve = 1
     if n_tr == 0:
         n_eval_nodes = len(NODES)                      # 학습할 게 없으면 전부 eval
     elif n_ev == 0:
@@ -559,30 +585,72 @@ def _sr(out_tag):
         return None
 
 
-def regime_table(K=100):
-    """행=stride, 열=변형, 셀=SR.  act 열보다 높은 칸이 'ACT 가 무너지는 지점'."""
-    import pandas as pd
-    cols = ["act", "carry", "bimamba_cpoff", "bimamba", "bimos"]
-    rows = []
-    for s in strides_for(K):
-        r = {"K": K, "stride": s}
-        for v in cols:
-            r[v] = _sr(f"rm_{v}_k{K}_s{s}")
-        rows.append(r)
-    df = pd.DataFrame(rows)
+_TBL_COLS = ["act", "acm2", "carry", "bimamba_cpoff", "bimamba", "bimos"]
+
+
+def _mark_best(df, cols):
     have = [c for c in cols if df[c].notna().any()]
     if have and df["act"].notna().any():
         df["best"] = df[have].idxmax(axis=1)
         df["best-act"] = (df[have].max(axis=1) - df["act"]).round(1)
-    print(f"== 레짐 맵 K={K} (TE off, {N_EP}ep/task, seed{SEED}) ==")
-    print(df.to_string(index=False))
     return df
+
+
+def stride_table(K=None):
+    """★ stride sweep. 행=실행 stride, 열=변형.  act 열보다 높은 칸이 우리가 이기는 지점.
+
+    같은 stride = 같은 추론 호출 횟수이므로, 이 표의 우위는 '동일 비용 우위'다.
+    """
+    import pandas as pd
+    K = MAIN_K if K is None else K
+    rows = []
+    for s in strides_for(K):
+        r = {"K": K, "stride": s}
+        for v in _TBL_COLS:
+            r[v] = _sr(f"rm_{v}_k{K}_s{s}")
+        rows.append(r)
+    df = _mark_best(pd.DataFrame(rows), _TBL_COLS)
+    print(f"== stride sweep  K={K} (TE off, {N_EP}ep/task, seed{SEED}) ==")
+    print(df.to_string(index=False))
+    if K == 100:
+        print("\n참고(8/25 은지님, n=500, 100k):")
+        print("  stride   ACT  ACM2  BiMamba  carry  BiMOS")
+        print("     10   42.5  56.8   65.0    60.0   60.4   <- 봉우리, +22.5")
+        print("     50   23.6  37.4   31.2    36.8   31.2")
+        print("    100   18.4  18.6   21.6    27.8   19.6")
+    return df
+
+
+def k_table(stride=None):
+    """메인 그림: 행=chunk K (실행 stride 고정), 열=변형.  ACT 가 무너지는 지점을 본다."""
+    import pandas as pd
+    stride = MAIN_STRIDE if stride is None else stride
+    rows = []
+    for K in sorted(K_ALL):
+        if stride > K:
+            continue
+        r = {"K": K, "stride": stride}
+        for v in _TBL_COLS:
+            r[v] = _sr(f"rm_{v}_k{K}_s{stride}")
+        rows.append(r)
+    df = _mark_best(pd.DataFrame(rows), _TBL_COLS)
+    print(f"== K sweep @ stride={stride} (TE off, {N_EP}ep/task, seed{SEED}) ==")
+    print(df.to_string(index=False))
+    print("\n참고(기존 측정): K=50 s10 ACT 67.6 / BiMamba 57.8  |  "
+          "K=100 s10 ACT 42.5 / BiMamba 65.0")
+    print("  -> 크로스오버가 K=50~100 사이. 이 표가 그 곡선을 채운다.")
+    return df
+
+
+def regime_table(K=100):
+    """stride_table 의 옛 이름(호환용)."""
+    return stride_table(K)
 
 
 def te_table():
     """TE 축: 행=K, 열=변형.  act 열이 어디서 뒤집히는지 = 크로스오버 K."""
     import pandas as pd
-    cols = ["act", "bimamba_cpoff", "bimamba", "bimos", "carry"]
+    cols = _TBL_COLS
     rows = []
     for K in sorted(K_ALL):
         r = {"K": K}
@@ -606,11 +674,15 @@ def te_table():
 
 
 def report():
-    te_table()
+    """stride sweep -> K sweep -> TE 축 순. 앞의 둘이 메인이다."""
+    stride_table(MAIN_K)
     print()
-    for K in (100, 50, 150, 20):
+    k_table(MAIN_STRIDE)
+    print()
+    for K in (50, 20, 150):
         try:
-            regime_table(K)
+            stride_table(K)
             print()
         except Exception as e:
-            print(f"(K={K} 표 스킵: {e})")
+            print(f"(K={K} stride 표 스킵: {e})")
+    te_table()
