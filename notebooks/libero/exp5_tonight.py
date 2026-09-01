@@ -223,8 +223,21 @@ MAIN_STRIDE = 10      # 그 봉우리. K sweep 은 이 stride 로 고정해서 �
 
 
 def _all_jobs():
-    """우선순위 = 이 리스트 순서. 앞쪽이 stride sweep(8/25 해준님이 은지님께 약속한 것)."""
+    """우선순위 = 이 리스트 순서. P0(A/B 판정) -> P1(stride sweep) -> P2(K sweep) ..."""
     Q = []
+    # P0 -- ★★ A/B 판정 셀 (paper/RESULTS_PLAN.md §0). 논문 프레임을 정하는 실험.
+    #   문제: K=100 고정(A안)이면 우리 대표값 65.0 < ACT 실측 최고 67.6(K=50 s10).
+    #   반면 은지님 8/17 청크 sweep 에서 BiMamba+carry 가 K=10~20 s10 TE off 로
+    #   74~76 을 찍었는데, 같은 구간의 ACT 값이 없다. 그걸 채우는 게 이 블록.
+    #   판정 규칙(n=500, SE±2.2%p, 5%p 룰) — ab_verdict() 가 자동으로 찍는다:
+    #     B안(소K 전 구간 우위) = 어느 K* 에서든 OURS-ACT >= 5 이고 OURS > 67.6
+    #     A안(K=100 "무너지는 지점", 교수님 8/18 프레임) = 그 외
+    #     회색지대(0<차이<5)   = 125k/150k ckpt eval 추가 -> 3점 평균 재판정
+    #   act k10/15/20 + bimos/cpoff k20 은 ckpt 가 있어 즉시 eval(5셀, ~10 GPU-h).
+    #   순수 bimamba k10/15/20, bimos k10/15, carry k10/15/20 은 학습되는 대로 편입.
+    for K in (20, 15, 10):
+        for v in ("act", "bimos", "bimamba_cpoff", "carry", "bimamba", "acm2"):
+            Q.append(_rm_job(v, K, MAIN_STRIDE))
     # P1 -- ★ K=100 stride sweep. 8/25 결과가 s10 에서 봉우리인데(BiMamba 65.0 vs
     #   ACT 42.5 = +22.5, n=500) 양옆 s5/s15/s25 가 비어 봉우리를 감싸지 못했다.
     #   ACT 도 s10 근처가 최적일 가능성이 크므로(K=50 에서 s1 47.3 < s10 67.6),
@@ -334,19 +347,21 @@ CRITICAL_TRAIN_JOBS = [
 ]
 
 # 학습 우선순위 -- critical 이 항상 앞. 이미 OK 인 태그는 train_queue() 에서 빠진다.
-# P2(K sweep @ s10) 를 채우는 순서로: 곡선의 양 끝(150, 20) -> 짧은 K.
+# 8/30 재정렬: A/B 판정(P0)이 소K(10~20)에서 나므로, 그 구간을 채우는 학습이 먼저다.
 TRAIN_PRIORITY = CRITICAL_TRAIN_JOBS + [
-    ("acm2",    150),   # K sweep 열 채우기
-    ("acm2",     20),
-    ("acm2",     50),
-    ("acm2",     10),
+    ("bimamba",  20),   # -- P0 판정용 소K 블록: 순수 BiMamba K=20 (cpoff 프록시 71.4 의 순수판)
+    ("bimos",    10),   #    은지님 74.9(K=10)/76.0(K=20) 재현용 — carry 포함판
+    ("bimos",    15),
+    ("carry",    10),   #    소K carry 단독 — B안일 때 carry 처분 판정에 필요
+    ("carry",    15),
+    ("carry",    20),
+    ("acm2",     10),   #    소K 기준선
     ("acm2",     15),
+    ("acm2",     20),
+    ("acm2",    150),   # -- 이하 K sweep 나머지 열
+    ("acm2",     50),
     ("carry",    50),   # 40k 에서 중단 — resume
     ("carry",   150),
-    ("carry",    20),
-    ("bimamba",  20),   # 순수 K=20 (cpoff 프록시 71.4 의 순수판)
-    ("bimos",    10),   # 오염판 K=10/15 — 은지님 75.4/75.6 재현 대조용
-    ("bimos",    15),
     ("bimamba", 100),   # 이하는 8/24 밤에 대부분 완료 — 남은 것만 잡힌다
     ("act",     150),
     ("act",      20),
@@ -762,8 +777,67 @@ def te_table():
     return df
 
 
+def ab_verdict():
+    """A/B 판정 (paper/RESULTS_PLAN.md §0): 소K(10/15/20) s10 TE off 에서 ACT vs 우리.
+
+    배경 — A안(K=100 고정, "ACT 가 무너지는 지점", 교수님 8/18 승인 프레임)은 지금
+    데이터로 닫히지만 대표값 65.0 이 ACT 실측 최고 67.6(K=50 s10)보다 낮다.
+    B안(소K 전 구간 우위)은 은지님 8/17 청크 sweep 의 74~76(K=10~20)이 근거인데
+    같은 구간의 ACT 값이 없어 열려 있다. 이 함수가 그 판정을 자동으로 찍는다.
+
+    규칙(n=500 -> SE±2.2%p, 5%p 미만 차이는 주장 금지):
+      B안 근거 = OURS(K*) - ACT(K*) >= 5  이고  OURS(K*) > 67.6
+      A안 근거 = OURS(K*) - ACT(K*) < 5 가 모든 K* 에서
+      회색지대 = 0 < 차이 < 5  ->  125k/150k ckpt eval 추가, 3점 평균으로 재판정
+    OURS 는 순수 bimamba > cpoff(프록시) > bimos 순으로 있는 값을 쓴다.
+    carry 기여 = bimos - cpoff (같은 ckpt, eval 에서 carry 만 on/off).
+    """
+    ACT_BEST = 67.6                      # ACT 의 LIBERO 실측 최고 (K=50 s10, TE off)
+    print("== A/B 판정  (K=10/15/20, stride 10, TE off) ==")
+    b_hits, measured = [], 0
+    for K in (10, 15, 20):
+        act = _sr(f"rm_act_k{K}_s{MAIN_STRIDE}")
+        ours = src = None
+        for v in ("bimamba", "bimamba_cpoff", "bimos"):      # 순수판 우선
+            s = _sr(f"rm_{v}_k{K}_s{MAIN_STRIDE}")
+            if s is not None:
+                ours, src = s, v
+                break
+        a = "-" if act is None else f"{act:.1f}"
+        o = "-" if ours is None else f"{ours:.1f}"
+        line = f"  K={K:<4} ACT {a:>5}   OURS[{src or '-':<13}] {o:>5}"
+        if act is None or ours is None:
+            print(line + "   (미측정)")
+            continue
+        measured += 1
+        d = ours - act
+        hit = d >= 5 and ours > ACT_BEST
+        b_hits.append(hit)
+        tag = ("B안 근거" if hit else
+               "회색지대 -> 125k/150k 반복" if 0 < d < 5 else "A안 근거")
+        print(line + f"   Δ={d:+5.1f}   {tag}")
+        cp = _sr(f"rm_bimos_k{K}_s{MAIN_STRIDE}")
+        pm = _sr(f"rm_bimamba_cpoff_k{K}_s{MAIN_STRIDE}")
+        if cp is not None and pm is not None:
+            c = cp - pm
+            print(f"        carry 기여(bimos-cpoff) = {c:+.1f}"
+                  + ("  -> 노이즈 안: 순수 BiMamba 메인 유지 가능(스캔 ablation 보존)"
+                     if abs(c) < 5 else "  -> carry 가 유의미: 메인 모델 재검토"))
+    if measured == 0:
+        print("\n판정: 데이터 없음 — 즉시 가능한 5셀부터: "
+              "rm_act_k10/15/20_s10, rm_bimos_k20_s10, rm_bimamba_cpoff_k20_s10")
+    elif any(b_hits):
+        print("\n판정: B안 우세 — 소K 전 구간 우위로 재구성. 후속 비용: scan_same/백본/층")
+        print("      ablation 을 최종 K 로 재측정(학습 ~4잡). carry 처분은 위 기여값으로.")
+    else:
+        print("\n판정(잠정): A안 — K=100 '무너지는 지점' 프레임 유지 (추가 학습 불필요,")
+        print("      P1 stride sweep 이 그대로 Table 2 가 된다). 미측정 K* 남아 있으면 보류.")
+
+
 def report():
-    """stride sweep -> K sweep -> TE 축 순. 앞의 둘이 메인이다."""
+    """A/B 판정 -> stride sweep -> K sweep -> TE 축 순."""
+    ab_verdict()
+    print()
     stride_table(MAIN_K)
     print()
     k_table(MAIN_STRIDE)
