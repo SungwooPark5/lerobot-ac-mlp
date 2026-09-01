@@ -656,6 +656,55 @@ def run_evals_all(node, gpus=None, max_rounds=6, dry=False):
     return total
 
 
+# -- A/B 판정 전용 실행 (노트북에서 학습 셀보다 먼저 돈다) --------------------
+DECISION_KS = (10, 15, 20, 50)   # 10~20 = 소K 판정, 50 = ACT 67.6 vs 60.7 충돌 재검증
+
+
+def decision_jobs(only_ready=True):
+    """A/B 판정 셀 전체: K=10/15/20/50 x 6변형 @ stride 10, TE off. 완료분 제외."""
+    jobs = [_rm_job(v, K, MAIN_STRIDE) for K in DECISION_KS for v in _ALL_V]
+    jobs = [j for j in jobs if not _eval_done(j)]
+    if only_ready:
+        jobs = [j for j in jobs if is_ready(j["src"])]
+    return jobs
+
+
+def node_decision_jobs(node):
+    """이 노드 몫의 판정 셀. **본대 eval 과 같은 분할**(_all_jobs()[i::3])에서 고르므로
+    어떤 노드가 먼저 eval 단계로 넘어가도 같은 셀을 두 노드가 돌 수 없다."""
+    keys = {(v, K) for K in DECISION_KS for v in _ALL_V}
+    i, k = _node_index(node), len(NODES)
+    mine = _all_jobs()[i::k]
+    sel = [j for j in mine
+           if j["kind"] == "rm" and j["stride"] == MAIN_STRIDE
+           and (j["variant"], j["K"]) in keys]
+    return [j for j in sel if is_ready(j["src"]) and not _eval_done(j)]
+
+
+def run_decision(node, gpus=None, dry=False):
+    """[판정 셀] ckpt 가 이미 있는 A/B 판정 eval 만 먼저 돈다 — 학습 불필요.
+
+    세 노드가 같이 돌리면 ready 셀 전부(현재 ~9셀: act k10/15/20/50 +
+    bimos/cpoff k20/k50 + 순수 bimamba k50)가 6 GPU 로 ~3h 에 끝나고,
+    끝나는 즉시 ab_verdict() 가 판정 규칙(5%p)으로 A/B 를 찍는다.
+    아직 학습 안 된 판정 셀(순수 bimamba k10/15/20, carry, acm2 소K)은
+    아래 학습 셀이 끝난 뒤 eval 셀에서 자동 편입된다.
+    """
+    node = node.strip().upper()
+    gpus = list(gpus) if gpus else v23.available_gpus()
+    jobs = node_decision_jobs(node)
+    if not jobs:
+        print(f"[{node}] 판정 셀 중 이 노드 몫은 없음/완료 — 다음(학습) 셀로 진행.")
+    else:
+        print(f"[{node}] 판정 eval {len(jobs)}셀 (~{2 * len(jobs) / max(1, len(gpus)):.0f}h): "
+              f"{[j['out'] for j in jobs]}")
+        run_evals(jobs, gpus, dry=dry)
+    if not dry:
+        print()
+        ab_verdict()
+    return len(jobs)
+
+
 def preflight(gpu=0, n_ep=5):
     """stride/TE override 가 lerobot_eval 에서 실제로 먹는지 ~12분짜리로 확인.
 
