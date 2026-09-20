@@ -13,13 +13,14 @@
 
 FWD 까지 0 이 나오면 두 배치가 사실 같다는 뜻이므로 테스트가 깨진 것이다.
 
-노트북에서:
-    import diag0_backward_const as D
-    res = D.run(tag="bimamba_pure")
+주의: 노트북 커널 python 이 아니라 mamba_ssm 이 깔린 venv 로 돌려야 한다
+(common_v23.py:43-44 의 PYTHON, 기본값 ~/lerobot_project/lerobot_env/bin/python).
+diag0_backward_const.ipynb 이 알아서 그 venv 로 subprocess 호출한다.
 
 셸에서:
-    python notebooks/libero/diag0_backward_const.py
-    python notebooks/libero/diag0_backward_const.py --tag bimamba_pure_k150
+    PY=~/lerobot_project/lerobot_env/bin/python
+    PYTHONPATH=src $PY notebooks/libero/diag0_backward_const.py
+    PYTHONPATH=src $PY notebooks/libero/diag0_backward_const.py --tags all --json /tmp/diag0.json
 """
 
 from __future__ import annotations
@@ -234,19 +235,49 @@ def report(res: dict) -> None:
         print(f"중단 — {v}")
 
 
+def to_jsonable(res: dict) -> dict:
+    """run() 결과를 json 으로 덤프 가능하게 바꾼다 (ratio 텐서 → list)."""
+    d = dict(res)
+    if "ratio" in d:
+        d["ratio"] = [float(x) for x in d["ratio"]]
+    return d
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tag", default=DEFAULT_TAG)
+    ap.add_argument("--tags", default=DEFAULT_TAG,
+                    help="쉼표로 여러 개, 또는 'all' (=K_TAGS 전체)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--step", type=int, default=150_000, help="-1 이면 최신 체크포인트")
     ap.add_argument("--task", default="libero_10")
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--json", default=None, help="결과를 이 경로에 json 으로 덤프")
     a = ap.parse_args()
 
-    res = run(tag=a.tag, seed=a.seed, step=None if a.step < 0 else a.step,
-              task=a.task, batch=a.batch, device=a.device, verbose=True)
-    return 0 if res["ok"] else 2
+    tags = list(K_TAGS.values()) if a.tags == "all" else [t.strip() for t in a.tags.split(",")]
+    step = None if a.step < 0 else a.step
+
+    out: dict = {}
+    for tag in tags:
+        if len(tags) > 1:
+            print("\n" + "#" * 68 + f"\n# {tag}\n" + "#" * 68)
+        try:
+            out[tag] = run(tag=tag, seed=a.seed, step=step, task=a.task,
+                           batch=a.batch, device=a.device, verbose=True)
+        except FileNotFoundError as e:
+            print(f"건너뜀 — {e}")
+            out[tag] = {"tag": tag, "ok": False, "verdict": "no_checkpoint", "error": str(e)}
+
+    if a.json:
+        import json as _json
+        p = Path(a.json)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_json.dumps({k: to_jsonable(v) for k, v in out.items()},
+                                 ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"\n[json] {p}")
+
+    return 0 if all(r["ok"] for r in out.values()) else 2
 
 
 if __name__ == "__main__":
