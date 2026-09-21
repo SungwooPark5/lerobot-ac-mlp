@@ -314,7 +314,26 @@ class Mamba2LiteralSSCPDecoder(nn.Module):
                 layer_idx=layer_idx,
             )
 
-        if self.use_bimamba_decoder:
+        # Structure ablation. getattr with the original behaviour as the default, so a
+        # checkpoint saved before these fields existed loads and runs unchanged.
+        self.bimamba_fuse = getattr(config, "bimamba_fuse", "mean")
+        self.bimamba_scan = getattr(config, "bimamba_scan", "reverse")
+        self.bimamba_scan_seed = int(getattr(config, "bimamba_scan_seed", 0))
+        # {(length, device): permutation}. Filled on first use -- the sequence length is
+        # T + K, and T depends on the image feature map, so it is not known here.
+        self._scan_perm: dict[tuple[int, torch.device], Tensor] = {}
+
+        if self.use_bimamba_decoder and self.bimamba_scan == "backward_only":
+            # One stack, scanning reversed. Layer indices start at 0, so this is
+            # parameter-identical to the unidirectional branch -- the ablation is the
+            # scan order alone, not capacity. No forward stack means no carry, which
+            # the config rejects rather than silently emitting an empty one.
+            self.forward_layers = None
+            self.backward_layers = nn.ModuleList(
+                [make_mamba2_layer(i) for i in range(config.n_decoder_layers)]
+            )
+            self.layers = None
+        elif self.use_bimamba_decoder:
             self.forward_layers = nn.ModuleList(
                 [make_mamba2_layer(i) for i in range(config.n_decoder_layers)]
             )
@@ -328,6 +347,22 @@ class Mamba2LiteralSSCPDecoder(nn.Module):
             )
             self.forward_layers = None
             self.backward_layers = None
+
+        # "concat" is the only fuse that carries parameters: [fwd ; bwd] is 2D wide and
+        # has to come back to D. "mean" and "sum" are parameter-free, so switching
+        # between those two does not change the model size.
+        if self.use_bimamba_decoder and self.bimamba_fuse == "concat":
+            self.bimamba_fuse_proj = nn.Linear(2 * config.dim_model, config.dim_model)
+        else:
+            self.bimamba_fuse_proj = None
+
+        if self.use_bimamba_decoder and self.bimamba_fuse == "gate":
+            # sigmoid(0) = 0.5, so training starts from exactly the "mean" model and
+            # the learned value is a direct readout of how much the backward stack
+            # ends up contributing.
+            self.bimamba_fuse_gate = nn.Parameter(torch.zeros(()))
+        else:
+            self.bimamba_fuse_gate = None
 
         self.use_action_self_attention = getattr(config, "use_action_self_attention", False)
         self.action_self_attention_use_gate = getattr(config, "action_self_attention_use_gate", True)
@@ -348,6 +383,64 @@ class Mamba2LiteralSSCPDecoder(nn.Module):
 
         self.norm = nn.LayerNorm(config.dim_model)
 
+    # ── Structure ablation helpers ─────────────────────────────────────────────
+
+    def _permutation(self, length: int, device) -> Tensor:
+        """Fixed random order for bimamba_scan="random", cached per (length, device).
+
+        Deterministic from bimamba_scan_seed rather than drawn per forward, so the
+        second stack sees one consistent ordering during training and the same one at
+        eval. A freshly drawn order every step would ablate "bidirectional" into "noise"
+        and confound the two. Also needs no buffer: the sequence length is T + K and T
+        depends on the image feature map, so it is not known at __init__.
+        """
+        key = (length, device)
+        perm = self._scan_perm.get(key)
+        if perm is None:
+            g = torch.Generator(device="cpu").manual_seed(self.bimamba_scan_seed + length)
+            perm = torch.randperm(length, generator=g).to(device)
+            self._scan_perm[key] = perm
+        return perm
+
+    def _reorder(self, seq: Tensor) -> Tensor:
+        """Reorder the sequence for the second stack. (B, L, D) -> (B, L, D)."""
+        if self.bimamba_scan == "same":
+            # Second stack scans forward as well -- the capacity control.
+            return seq
+        if self.bimamba_scan == "random":
+            return seq[:, self._permutation(seq.shape[1], seq.device), :]
+        # "reverse" and "backward_only" both scan the whole chunk backwards, encoder
+        # context included. Reversing only the action tokens is a different model --
+        # ACMConfig calls that bimamba_action_only_flip and never implements it.
+        return seq.flip([1])
+
+    def _unreorder(self, seq: Tensor) -> Tensor:
+        """Undo _reorder so positions line up with the forward stack again."""
+        if self.bimamba_scan == "same":
+            return seq
+        if self.bimamba_scan == "random":
+            perm = self._permutation(seq.shape[1], seq.device)
+            inv = torch.empty_like(perm)
+            inv[perm] = torch.arange(perm.numel(), device=perm.device)
+            return seq[:, inv, :]
+        return seq.flip([1])
+
+    def _fuse(self, forward_seq: Tensor, backward_seq: Tensor) -> Tensor:
+        """Combine the two stacks."""
+        if self.bimamba_fuse == "gate":
+            g = torch.sigmoid(self.bimamba_fuse_gate)
+            return g * forward_seq + (1.0 - g) * backward_seq
+        if self.bimamba_fuse == "sum":
+            # Not a distinct model: a LayerNorm follows this, and LayerNorm cancels
+            # scale, so this is "mean" with the 0.5 dropped. Left in so the name
+            # resolves; do not use it as an ablation cell.
+            return forward_seq + backward_seq
+        if self.bimamba_fuse == "concat":
+            return self.bimamba_fuse_proj(torch.cat([forward_seq, backward_seq], dim=-1))
+        # "mean" -- the original, chosen to keep the activation scale close to the
+        # unidirectional decoder's.
+        return 0.5 * (forward_seq + backward_seq)
+
     def forward(
         self,
         x: Tensor,  # (K, B, D) — decoder queries
@@ -366,7 +459,17 @@ class Mamba2LiteralSSCPDecoder(nn.Module):
         combined_seq = torch.cat([encoder_out, x], dim=1)  # (B, T+K, D)
 
         new_states = []
-        if self.use_bimamba_decoder:
+        if self.use_bimamba_decoder and self.bimamba_scan == "backward_only":
+            # No forward stack, so nothing to carry -- new_states stays empty and the
+            # policy must have sscp_enabled=False (enforced in the config).
+            second_seq = self._reorder(combined_seq)
+            for layer in self.backward_layers:
+                second_seq, _ = mamba2_stateful_forward(
+                    layer, second_seq, initial_state=None, return_state=True
+                )
+            combined_seq = self._unreorder(second_seq)
+
+        elif self.use_bimamba_decoder:
             forward_seq = combined_seq
             for i, layer in enumerate(self.forward_layers):
                 init = carry[i] if carry is not None else None
@@ -375,14 +478,14 @@ class Mamba2LiteralSSCPDecoder(nn.Module):
                 )
                 new_states.append(st)
 
-            backward_seq = combined_seq.flip([1])
+            backward_seq = self._reorder(combined_seq)
             for layer in self.backward_layers:
                 backward_seq, _ = mamba2_stateful_forward(
                     layer, backward_seq, initial_state=None, return_state=True
                 )
-            backward_seq = backward_seq.flip([1])
+            backward_seq = self._unreorder(backward_seq)
 
-            combined_seq = 0.5 * (forward_seq + backward_seq)
+            combined_seq = self._fuse(forward_seq, backward_seq)
         else:
             for i, layer in enumerate(self.layers):
                 init = carry[i] if carry is not None else None

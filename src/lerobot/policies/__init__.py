@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .act.configuration_act import ACTConfig as ACTConfig
+from .acm.configuration_acm import ACMConfig as ACMConfig
 from .acm2.configuration_acm2 import ACM2Config as ACM2Config
 from .acm2_sscp_literal.configuration_acm2_sscp_literal import ACM2SSCPLiteralConfig as ACM2SSCPLiteralConfig
 from .acm2_sscp_literal_bimamba.configuration_acm2_sscp_literal_bimamba import (

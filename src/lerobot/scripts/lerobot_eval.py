@@ -573,7 +573,10 @@ def eval_main(cfg: EvalPipelineConfig):
             preprocessor=preprocessor,
             postprocessor=postprocessor,
             n_episodes=cfg.eval.n_episodes,
-            max_episodes_rendered=0,  # do not save eval videos
+            # Rendering is off by default because writing mp4s costs wall clock on every
+            # eval and none of the sweep runs need them. RENDER_EPISODES=<n> turns it on for
+            # a single run without touching any script or changing the default for others.
+            max_episodes_rendered=int(os.environ.get("RENDER_EPISODES", "0")),
             videos_dir=Path(cfg.output_dir) / "videos",
             actions_dir=actions_dir,
             start_seed=cfg.seed,
