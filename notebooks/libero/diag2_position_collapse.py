@@ -124,8 +124,16 @@ def capture(policy, batch, K: int) -> dict:
     dec = policy.model.decoder
     has_bwd = getattr(dec, "backward_layers", None) is not None
 
+    # BiMamba 는 forward_layers/backward_layers, 단방향은 layers 다
+    # (modeling_acm2_sscp_literal.py:317-330 — 안 쓰는 쪽은 None 으로 둔다).
+    fwd_stack = dec.forward_layers if has_bwd else getattr(dec, "layers", None)
+    if fwd_stack is None:
+        raise RuntimeError(
+            "순방향 스택을 찾지 못했다. decoder 에 forward_layers 도 layers 도 없다: "
+            f"{type(dec).__name__}")
+
     cap: dict[str, list] = {"fwd": [], "bwd": []}
-    handles = [dec.forward_layers[-1].out_proj.register_forward_hook(
+    handles = [fwd_stack[-1].out_proj.register_forward_hook(
         lambda m, i, o, k="fwd": cap[k].append(o.detach().float()))]
     if has_bwd:
         handles.append(dec.backward_layers[-1].out_proj.register_forward_hook(
@@ -368,6 +376,11 @@ def main() -> int:
         except FileNotFoundError as e:
             print(f"건너뜀 — {e}")
             res[tag] = {"tag": tag, "ok": False, "verdict": "no_checkpoint", "error": str(e)}
+        except Exception as e:                      # 한 태그가 죽어도 나머지는 살린다
+            import traceback
+            traceback.print_exc()
+            print(f"\n건너뜀 — {tag} 에서 {type(e).__name__}: {e}")
+            res[tag] = {"tag": tag, "ok": False, "verdict": "error", "error": str(e)}
 
     if a.json:
         import json as _json
