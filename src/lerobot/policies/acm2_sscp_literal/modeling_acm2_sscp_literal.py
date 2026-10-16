@@ -402,20 +402,17 @@ class Mamba2LiteralSSCPDecoder(nn.Module):
             self._scan_perm[key] = perm
         return perm
 
-    def _reorder(self, seq: Tensor) -> Tensor:
-        """Reorder the sequence for the second stack. (B, L, D) -> (B, L, D)."""
+    def _reorder(self, seq: Tensor, action_len: int) -> Tensor:
         if self.bimamba_scan == "same":
-            # Second stack scans forward as well -- the capacity control.
             return seq
         if self.bimamba_scan == "random":
             return seq[:, self._permutation(seq.shape[1], seq.device), :]
-        # "reverse" and "backward_only" both scan the whole chunk backwards, encoder
-        # context included. Reversing only the action tokens is a different model --
-        # ACMConfig calls that bimamba_action_only_flip and never implements it.
-        return seq.flip([1])
+        if self.bimamba_scan == "action_only":
+            context, action = seq[:, :-action_len, :], seq[:, -action_len:, :]
+            return torch.cat([context, action.flip([1])], dim=1)
+        return seq.flip([1])  # "reverse" / "backward_only"
 
-    def _unreorder(self, seq: Tensor) -> Tensor:
-        """Undo _reorder so positions line up with the forward stack again."""
+    def _unreorder(self, seq: Tensor, action_len: int) -> Tensor:
         if self.bimamba_scan == "same":
             return seq
         if self.bimamba_scan == "random":
@@ -423,6 +420,9 @@ class Mamba2LiteralSSCPDecoder(nn.Module):
             inv = torch.empty_like(perm)
             inv[perm] = torch.arange(perm.numel(), device=perm.device)
             return seq[:, inv, :]
+        if self.bimamba_scan == "action_only":
+            context, action = seq[:, :-action_len, :], seq[:, -action_len:, :]
+            return torch.cat([context, action.flip([1])], dim=1)  # flip is its own inverse
         return seq.flip([1])
 
     def _fuse(self, forward_seq: Tensor, backward_seq: Tensor) -> Tensor:
@@ -457,17 +457,18 @@ class Mamba2LiteralSSCPDecoder(nn.Module):
         x = x.transpose(0, 1)  # (B, K, D)
         encoder_out = encoder_out.transpose(0, 1)  # (B, T, D)
         combined_seq = torch.cat([encoder_out, x], dim=1)  # (B, T+K, D)
+        chunk_size = x.shape[1]
 
         new_states = []
         if self.use_bimamba_decoder and self.bimamba_scan == "backward_only":
             # No forward stack, so nothing to carry -- new_states stays empty and the
             # policy must have sscp_enabled=False (enforced in the config).
-            second_seq = self._reorder(combined_seq)
+            second_seq = self._reorder(combined_seq, chunk_size)
             for layer in self.backward_layers:
                 second_seq, _ = mamba2_stateful_forward(
                     layer, second_seq, initial_state=None, return_state=True
                 )
-            combined_seq = self._unreorder(second_seq)
+            combined_seq = self._unreorder(second_seq, chunk_size)
 
         elif self.use_bimamba_decoder:
             forward_seq = combined_seq
@@ -478,12 +479,12 @@ class Mamba2LiteralSSCPDecoder(nn.Module):
                 )
                 new_states.append(st)
 
-            backward_seq = self._reorder(combined_seq)
+            backward_seq = self._reorder(combined_seq, chunk_size)
             for layer in self.backward_layers:
                 backward_seq, _ = mamba2_stateful_forward(
                     layer, backward_seq, initial_state=None, return_state=True
                 )
-            backward_seq = self._unreorder(backward_seq)
+            backward_seq = self._unreorder(backward_seq, chunk_size)
 
             combined_seq = self._fuse(forward_seq, backward_seq)
         else:
@@ -494,7 +495,6 @@ class Mamba2LiteralSSCPDecoder(nn.Module):
                 )
                 new_states.append(st)
 
-        chunk_size = x.shape[1]
         out = combined_seq[:, -chunk_size:, :]
 
         if self.use_action_self_attention:

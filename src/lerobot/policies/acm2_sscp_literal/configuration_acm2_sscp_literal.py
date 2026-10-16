@@ -37,7 +37,7 @@ CARRY_GATE_MODES = ("reset", "replace", "residual")
 BIMAMBA_FUSE_MODES = ("mean", "gate", "concat", "sum")
 
 # What order the second stack scans in. "reverse" is the original behaviour.
-BIMAMBA_SCAN_MODES = ("reverse", "same", "random", "backward_only")
+BIMAMBA_SCAN_MODES = ("reverse", "same", "random", "backward_only", "action_only")
 
 
 @PreTrainedConfig.register_subclass("acm2_sscp_literal")
@@ -88,6 +88,16 @@ class ACM2SSCPLiteralConfig(ACM2Config):
     #                    The permutation is derived deterministically from
     #                    bimamba_scan_seed and the sequence length, so it is the same
     #                    every forward and at eval, and needs no stored state.
+    #   "action_only"    only the K action-query tokens are reversed; the T context
+    #                    tokens keep their original scan order. Under "reverse", the
+    #                    whole [context; action] block is flipped, so in the backward
+    #                    stack's scan order the action tokens come BEFORE the context
+    #                    tokens -- backward-branch action outputs are computed with no
+    #                    context in their causal history at all, and only encode
+    #                    relative position among action tokens. "action_only" instead
+    #                    scans [context (original order); action (reversed)], so the
+    #                    backward branch still carries context state into every
+    #                    action-token output.
     bimamba_scan: str = "reverse"
     bimamba_scan_seed: int = 0
 
