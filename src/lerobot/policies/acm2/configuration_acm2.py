@@ -84,15 +84,6 @@ class ACM2Config(PreTrainedConfig):
     mamba2_headdim: int = 64
     mamba2_chunk_size: int = 256  # SSD kernel chunk size (distinct from action chunk_size)
 
-    # BiMamba decoder options
-    use_bimamba_decoder: bool = False
-    bimamba_action_only_flip: bool = False
-
-    # Action-token self-attention options
-    use_action_self_attention: bool = False
-    action_self_attention_use_gate: bool = True
-    action_self_attention_gamma_init: float = 1e-4
-
     # Configuration for temporal weighting.
     use_temporal_weighting: bool = False
     temporal_execution_weight: float = 0.9

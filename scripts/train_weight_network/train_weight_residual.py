@@ -1,5 +1,6 @@
 """Stage 2 v2: Residual weight network on TE prior."""
 import sys
+import argparse
 sys.path.insert(0, "/home1/eunji24/lerobot_project/lerobot-ac-mlp/src")
 
 import torch
@@ -11,18 +12,35 @@ from tqdm import tqdm
 import wandb
 
 CACHE_PATH = Path("/home1/eunji24/lerobot_project/cache/baseline_chunks/chunks.npz")
-OUT_DIR = Path("/home1/eunji24/lerobot_project/outputs/weight_network_residual")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--lambda_delta_reg", type=float, default=5.0)
+parser.add_argument("--steps", type=int, default=50000)
+parser.add_argument("--lr", type=float, default=3e-4)
+parser.add_argument("--te_coeff", type=float, default=0.01)
+args = parser.parse_args()
+
+LAMBDA_DELTA_REG = args.lambda_delta_reg
+STEPS = args.steps
+LR = args.lr
 L = 100
-TE_COEFF = 0.01
-LAMBDA_DELTA_REG = 0.1
+TE_COEFF = args.te_coeff
+
+te_tag = "old" if TE_COEFF < 0 else "fresh"
+lambda_tag = str(LAMBDA_DELTA_REG).replace(".", "p")
+OUT_DIR = Path(
+    f"/home1/eunji24/lerobot_project/outputs/weight_network_residual_vis_v2/{te_tag}_lambda{lambda_tag}"
+)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 D_MODEL = 128
 N_HEADS = 4
-N_LAYERS = 2
-LR = 3e-4
-STEPS = 50000
+N_ENC_LAYERS = 2 # memory encoder (신규) 
+N_DEC_LAYERS = 4 # decoder (2 → 4) 
+TYPE_STATE = 0 
+TYPE_IMAGE = 1 
+TYPE_CHUNK = 2
+
 BATCH_SIZE = 64
 LOG_FREQ = 100
 SAVE_FREQ = 10000
@@ -30,14 +48,25 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class ResidualWeightNetwork(nn.Module):
-    def __init__(self, L, state_dim, action_dim, te_coeff=0.01,
-                 d_model=128, n_heads=4, n_layers=2):
+    def __init__(self, L, state_dim, action_dim, vis_dim, te_coeff=0.01,
+                 d_model=128, n_heads=4, n_enc_layers=2, n_dec_layers=4):
         super().__init__()
         self.L = L
 
         self.chunk_proj = nn.Linear(action_dim, d_model)
         self.state_proj = nn.Linear(state_dim, d_model)
+        self.image_proj = nn.Sequential(
+            nn.LayerNorm(vis_dim),
+            nn.Linear(vis_dim, d_model),
+        )
         self.queries = nn.Embedding(L, d_model)
+        self.chunk_pos = nn.Embedding(L, d_model)
+        self.tok_type = nn.Embedding(3, d_model)
+        enc_layer = nn.TransformerEncoderLayer( 
+            d_model=d_model, nhead=n_heads, 
+            dim_feedforward=4 * d_model, batch_first=True,
+        ) 
+        self.encoder = nn.TransformerEncoder(enc_layer, n_enc_layers)
 
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=d_model,
@@ -45,7 +74,7 @@ class ResidualWeightNetwork(nn.Module):
             dim_feedforward=4 * d_model,
             batch_first=True,
         )
-        self.decoder = nn.TransformerDecoder(decoder_layer, n_layers)
+        self.decoder = nn.TransformerDecoder(decoder_layer, n_dec_layers)
         self.head = nn.Linear(d_model, 1)
 
         nn.init.zeros_(self.head.weight)
@@ -56,12 +85,18 @@ class ResidualWeightNetwork(nn.Module):
             -te_coeff * torch.arange(L, dtype=torch.float32)
         )
 
-    def forward(self, state, contribs):
+    def forward(self, state, image_feat, contribs):
         B = state.shape[0]
-
-        state_tok = self.state_proj(state).unsqueeze(1)
-        chunk_toks = self.chunk_proj(contribs)
-        memory = torch.cat([state_tok, chunk_toks], dim=1)
+        type_emb = self.tok_type.weight  # [3, D]
+        
+        state_tok = self.state_proj(state).unsqueeze(1) + type_emb[0].view(1, 1, -1)
+        image_tok = self.image_proj(image_feat).unsqueeze(1) + type_emb[1].view(1, 1, -1)
+        chunk_toks = (self.chunk_proj(contribs)
+                        + self.chunk_pos.weight.unsqueeze(0)
+                        + type_emb[2].view(1, 1, -1))
+        
+        memory = torch.cat([state_tok, image_tok, chunk_toks], dim=1)  # [B, L+2, D]
+        memory = self.encoder(memory)                                      # encode 후 decoder로
 
         q = self.queries.weight.unsqueeze(0).expand(B, -1, -1)
         x = self.decoder(q, memory)
@@ -77,6 +112,9 @@ cache = np.load(CACHE_PATH)
 chunks_cpu = torch.from_numpy(cache["chunks"].copy()).float()
 states_cpu = torch.from_numpy(cache["states"].copy()).float()
 actions_cpu = torch.from_numpy(cache["actions"].copy()).float()
+vis_feats_cpu = torch.from_numpy(cache["vis_feats"].copy()).float()
+vis_dim = vis_feats_cpu.shape[-1]
+print(f"vis_feats: {vis_feats_cpu.shape}, vis_dim={vis_dim}")
 ep_starts = cache["ep_starts"].astype(np.int64)
 
 N, chunk_size, action_dim = chunks_cpu.shape
@@ -110,19 +148,22 @@ def sample_batch(batch_size):
 
     target_idx = win_starts + L - 1
     states = states_cpu[target_idx]
+    vis_feats = vis_feats_cpu[target_idx]
     targets = actions_cpu[target_idx]
 
-    return states.to(DEVICE), contribs.to(DEVICE), targets.to(DEVICE)
+    return states.to(DEVICE), vis_feats.to(DEVICE), contribs.to(DEVICE), targets.to(DEVICE)
 
 
 model = ResidualWeightNetwork(
     L=L,
     state_dim=state_dim,
     action_dim=action_dim,
+    vis_dim=vis_dim,
     te_coeff=TE_COEFF,
     d_model=D_MODEL,
     n_heads=N_HEADS,
-    n_layers=N_LAYERS,
+    n_enc_layers=N_ENC_LAYERS,
+    n_dec_layers=N_DEC_LAYERS,
 ).to(DEVICE)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
@@ -130,23 +171,25 @@ print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
 
 wandb.init(
     project="lerobot",
-    name=f"weight_residual_L{L}_lambda{LAMBDA_DELTA_REG}",
+    name=f"weight_residual_vis_v2_L{L}_lambda{LAMBDA_DELTA_REG}",
     config={
         "L": L,
         "lr": LR,
         "steps": STEPS,
         "batch_size": BATCH_SIZE,
+        "vis_dim": vis_dim,
         "d_model": D_MODEL,
         "n_heads": N_HEADS,
-        "n_layers": N_LAYERS,
+        "n_enc_layers": N_ENC_LAYERS,
+        "n_dec_layers": N_DEC_LAYERS,
         "te_coeff": TE_COEFF,
         "lambda_delta_reg": LAMBDA_DELTA_REG,
     },
 )
 
 with torch.no_grad():
-    s, c, t = sample_batch(256)
-    final_logits, delta = model(s, c)
+    s, v, c, t = sample_batch(256)
+    final_logits, delta = model(s, v, c)
     weights = F.softmax(final_logits, dim=1)
 
     init_l1 = F.l1_loss((weights.unsqueeze(-1) * c).sum(dim=1), t).item()
@@ -164,9 +207,9 @@ with torch.no_grad():
 
 print(f"\nTraining {STEPS} steps with lambda_delta_reg={LAMBDA_DELTA_REG}...")
 for step in tqdm(range(STEPS)):
-    s, c, t = sample_batch(BATCH_SIZE)
+    s, v, c, t = sample_batch(BATCH_SIZE)
 
-    final_logits, delta = model(s, c)
+    final_logits, delta = model(s, v, c)
     weights = F.softmax(final_logits, dim=1).unsqueeze(-1)
     ensembled = (weights * c).sum(dim=1)
 
@@ -202,9 +245,12 @@ for step in tqdm(range(STEPS)):
             "L": L,
             "state_dim": state_dim,
             "action_dim": action_dim,
+            "vis_dim": vis_dim,
+            "image_key": "observation.images.top",
             "d_model": D_MODEL,
             "n_heads": N_HEADS,
-            "n_layers": N_LAYERS,
+            "n_enc_layers": N_ENC_LAYERS,
+            "n_dec_layers": N_DEC_LAYERS,
             "te_coeff": TE_COEFF,
             "lambda_delta_reg": LAMBDA_DELTA_REG,
         }, OUT_DIR / f"weight_net_step{step + 1}.pt")
@@ -215,9 +261,12 @@ torch.save({
     "L": L,
     "state_dim": state_dim,
     "action_dim": action_dim,
+    "vis_dim": vis_dim,
+    "image_key": "observation.images.top",
     "d_model": D_MODEL,
     "n_heads": N_HEADS,
-    "n_layers": N_LAYERS,
+    "n_enc_layers": N_ENC_LAYERS,
+    "n_dec_layers": N_DEC_LAYERS,
     "te_coeff": TE_COEFF,
     "lambda_delta_reg": LAMBDA_DELTA_REG,
 }, OUT_DIR / "weight_net_final.pt")

@@ -49,6 +49,7 @@ print(f"  state_dim={state_dim}, action_dim={action_dim}")
 chunks_arr = np.zeros((N, config.chunk_size, action_dim), dtype=np.float32)
 states_arr = np.zeros((N, state_dim), dtype=np.float32)                                                                                                            
 actions_arr = np.zeros((N, action_dim), dtype=np.float32)
+vis_feats_arr = np.zeros((N, 512), dtype=np.float32)
 ep_idx_arr = np.zeros(N, dtype=np.int64)                                                                                                                           
                                                                                                                                                                  
 # Episode 경계 계산
@@ -61,6 +62,10 @@ for ep in range(dataset.num_episodes):
     ep_starts.append((f, t))
 
 print(f"  frames_per_episode={frames_per_ep}")                                                                                                                                    
+
+# episode index 미리 채우기
+for ep, (f, t) in enumerate(ep_starts):
+    ep_idx_arr[f:t] = ep
                                       
 # 6. iterate                                                                                                                                                       
 print("Computing chunks...")                                                                                                                                       
@@ -76,28 +81,35 @@ with torch.no_grad():
               batch[k] = v
       # preprocess                                                                                                                                               
       batch = preprocessor(batch)
-      # forward                                                                                                                                                  
+
+      # forward
+      # visual feature from frozen policy backbone
+      image = batch["observation.images.top"]
+      out = policy.model.backbone(image)
+      feat_map = out["feature_map"]              # [B, 512, 15, 20]
+      vis_feat = feat_map.mean(dim=(-2, -1))     # [B, 512]
+
       chunk = policy.predict_action_chunk(batch)  # (1, chunk_size, action_dim)
       chunks_arr[idx] = chunk[0].cpu().numpy()
       states_arr[idx] = sample["observation.state"].numpy()
       actions_arr[idx] = sample["action"].numpy()
-      # episode index 한 번에 채우기
-      ep_idx_arr = np.zeros(N, dtype=np.int64)
-      for ep, (f, t) in enumerate(ep_starts):
-          ep_idx_arr[f:t] = ep                                                                                                                                             
+      vis_feats_arr[idx] = vis_feat[0].detach().cpu().numpy()
                                                                                                                                                                  
 # 7. save
 print("Saving cache...")                                                                                                                                           
 np.savez_compressed(
-  CACHE_DIR / "chunks.npz",               
-  chunks=chunks_arr,                  
+  CACHE_DIR / "chunks.npz",
+  chunks=chunks_arr,
   states=states_arr,
-  actions=actions_arr,                                                                                                                                           
+  actions=actions_arr,
+  vis_feats=vis_feats_arr,
+  image_key=np.array(["observation.images.top"]),
   episode_idx=ep_idx_arr,
-  ep_starts=np.array(ep_starts),                                                                                                                                 
+  ep_starts=np.array(ep_starts),                                                                                                                                
 )                                       
-print(f"\nSaved to {CACHE_DIR / 'chunks.npz'}")
+print(f"Saved to {CACHE_DIR / 'chunks.npz'}")
 print(f"  chunks: {chunks_arr.shape}")                                                                                                                             
 print(f"  states: {states_arr.shape}")  
-print(f"  actions: {actions_arr.shape}")                                                                                                                           
+print(f"  actions: {actions_arr.shape}")
+print(f"  vis_feats: {vis_feats_arr.shape}")                                                                                                                         
 print(f"  size: ~{chunks_arr.nbytes / 1e6:.1f} MB chunks + {states_arr.nbytes/1e6:.1f}MB states")   

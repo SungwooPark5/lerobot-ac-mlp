@@ -47,7 +47,7 @@ class ACMCrossPolicy(PreTrainedPolicy):
     config_class = ACMCrossConfig
     name = "acm_cross_atten"
 
-    def __init__(
+    def __init__( 
         self,
         config: ACMCrossConfig,
     ):

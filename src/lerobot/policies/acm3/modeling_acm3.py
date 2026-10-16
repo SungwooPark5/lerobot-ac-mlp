@@ -474,6 +474,12 @@ class Mamba3ACMDecoder(nn.Module):
             )
 
         self.use_bimamba_decoder = getattr(config, "use_bimamba_decoder", False)
+        self.bimamba_flip_mode = getattr(config, "bimamba_flip_mode", "full")
+        if self.bimamba_flip_mode not in ["full", "action_only"]:
+            raise ValueError(
+                f"bimamba_flip_mode must be one of ['full', 'action_only'], "
+                f"got {self.bimamba_flip_mode}"
+            )
 
         def make_mamba3_layer(layer_idx: int):
             return Mamba3(
@@ -546,16 +552,43 @@ class Mamba3ACMDecoder(nn.Module):
         combined_seq = torch.cat([encoder_out, x], dim=1)
 
         if self.use_bimamba_decoder:
+            chunk_size = x.shape[1]
+
             forward_seq = combined_seq
             for layer in self.forward_layers:
                 forward_seq = layer(forward_seq)
 
-            backward_seq = combined_seq.flip([1])
-            for layer in self.backward_layers:
-                backward_seq = layer(backward_seq)
-            backward_seq = backward_seq.flip([1])
+            if self.bimamba_flip_mode == "full":
+                backward_seq = combined_seq.flip([1])
+                for layer in self.backward_layers:
+                    backward_seq = layer(backward_seq)
+                backward_seq = backward_seq.flip([1])
 
-            combined_seq = 0.5 * (forward_seq + backward_seq)
+                combined_seq = 0.5 * (forward_seq + backward_seq)
+
+            elif self.bimamba_flip_mode == "action_only":
+                encoder_tokens = combined_seq[:, :-chunk_size, :]
+                action_tokens = combined_seq[:, -chunk_size:, :]
+
+                backward_input = torch.cat(
+                    [encoder_tokens, action_tokens.flip([1])],
+                    dim=1,
+                )
+
+                backward_seq = backward_input
+                for layer in self.backward_layers:
+                    backward_seq = layer(backward_seq)
+
+                backward_encoder = backward_seq[:, :-chunk_size, :]
+                backward_action = backward_seq[:, -chunk_size:, :].flip([1])
+
+                backward_seq = torch.cat(
+                    [backward_encoder, backward_action],
+                    dim=1,
+                )
+
+                combined_seq = 0.5 * (forward_seq + backward_seq)
+
         else:
             for layer in self.layers:
                 combined_seq = layer(combined_seq)

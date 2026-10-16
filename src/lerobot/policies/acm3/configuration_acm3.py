@@ -106,6 +106,7 @@ class ACM3Config(PreTrainedConfig):
     mamba3_chunk_size: int = 64  # SISO canonical (Mamba3 source comment); MIMO would use 64/mimo_rank
 
     use_bimamba_decoder: bool = False
+    bimamba_flip_mode: str = "full"
     use_action_self_attention: bool = False
     action_self_attention_use_gate: bool = True
     action_self_attention_gamma_init: float = 1e-4
@@ -138,6 +139,11 @@ class ACM3Config(PreTrainedConfig):
         if not self.vision_backbone.startswith("resnet"):
             raise ValueError(
                 f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
+            )
+        if self.bimamba_flip_mode not in ["full", "action_only"]:
+            raise ValueError(
+                f"bimamba_flip_mode must be one of ['full', 'action_only'], "
+                f"got {self.bimamba_flip_mode}"
             )
         if self.temporal_ensemble_coeff is not None and self.n_action_steps > 1:
             raise NotImplementedError(
