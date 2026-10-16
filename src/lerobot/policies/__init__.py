@@ -14,6 +14,12 @@
 
 from .act.configuration_act import ACTConfig as ACTConfig
 from .acm.configuration_acm import ACMConfig as ACMConfig
+# Importing a config is what registers its --policy.type name, and loading a saved
+# checkpoint resolves that name before any factory function runs. Without these two
+# lines an acm2/acm3 checkpoint fails at parse time with "Couldn't find a choice
+# class for 'acm2'", depending on whether something else happened to import factory.
+from .acm2.configuration_acm2 import ACM2Config as ACM2Config
+from .acm3.configuration_acm3 import ACM3Config as ACM3Config
 from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
 from .groot.configuration_groot import GrootConfig as GrootConfig
 from .pi0.configuration_pi0 import PI0Config as PI0Config
@@ -27,6 +33,8 @@ from .xvla.configuration_xvla import XVLAConfig as XVLAConfig
 __all__ = [
     "ACTConfig",
     "ACMConfig",
+    "ACM2Config",
+    "ACM3Config",
     "DiffusionConfig",
     "PI0Config",
     "PI05Config",
